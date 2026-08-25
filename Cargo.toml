@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/splitdesk-core",
+    "crates/splitdesk-protocol",
+    "crates/splitdesk-transport",
+    "crates/splitdesk-media",
+    "crates/splitdesk-session",
+    "crates/splitdesk-metrics",
+    "crates/splitdesk-host-linux",
+    "crates/splitdesk-host-windows",
+    "crates/splitdesk-client-core",
+    "crates/splitdesk-client-linux",
+    "crates/splitdesk-client-windows",
+    "crates/splitdeskd",
+    "crates/splitdesk-cli",
+    "crates/splitdesk-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/splitdesk/splitdesk"
+rust-version = "1.80"
+
+[workspace.dependencies]
+splitdesk-core = { path = "crates/splitdesk-core" }
+splitdesk-protocol = { path = "crates/splitdesk-protocol" }
+splitdesk-transport = { path = "crates/splitdesk-transport" }
+splitdesk-media = { path = "crates/splitdesk-media" }
+splitdesk-session = { path = "crates/splitdesk-session" }
+splitdesk-metrics = { path = "crates/splitdesk-metrics" }
+splitdesk-host-linux = { path = "crates/splitdesk-host-linux" }
+splitdesk-host-windows = { path = "crates/splitdesk-host-windows" }
+splitdesk-client-core = { path = "crates/splitdesk-client-core" }
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }

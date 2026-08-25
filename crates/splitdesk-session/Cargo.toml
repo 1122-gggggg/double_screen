@@ -1,0 +1,11 @@
+[package]
+name = "splitdesk-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SplitDesk in-memory session manager and backend trait"
+
+[dependencies]
+parking_lot = { workspace = true }
+serde = { workspace = true }
+splitdesk-core = { workspace = true }

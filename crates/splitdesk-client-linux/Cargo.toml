@@ -1,0 +1,23 @@
+[package]
+name = "splitdesk-client-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SplitDesk Linux client"
+
+[[bin]]
+name = "splitdesk-client-linux"
+path = "src/main.rs"
+
+[dependencies]
+splitdesk-core.workspace = true
+splitdesk-client-core.workspace = true
+splitdeskd = { path = "../splitdeskd" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

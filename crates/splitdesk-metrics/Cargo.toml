@@ -1,0 +1,10 @@
+[package]
+name = "splitdesk-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SplitDesk latency stages, clock domains, and stats"
+
+[dependencies]
+serde = { workspace = true }
+splitdesk-core = { workspace = true }

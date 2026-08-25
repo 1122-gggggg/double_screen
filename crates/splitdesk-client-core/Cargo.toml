@@ -1,0 +1,21 @@
+[package]
+name = "splitdesk-client-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OS-agnostic SplitDesk client session, cursor, and frame state"
+
+[dependencies]
+splitdesk-core.workspace = true
+splitdesk-protocol.workspace = true
+splitdesk-metrics.workspace = true
+splitdesk-media.workspace = true
+splitdeskd = { path = "../splitdeskd" }
+minifb = "0.28"
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

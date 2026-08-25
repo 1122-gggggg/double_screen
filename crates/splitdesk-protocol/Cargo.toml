@@ -1,0 +1,14 @@
+[package]
+name = "splitdesk-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SplitDesk session protocol: handshake, framing, input, auth"
+
+[dependencies]
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+splitdesk-core = { workspace = true }
+uuid = { workspace = true }
+zeroize = { workspace = true }

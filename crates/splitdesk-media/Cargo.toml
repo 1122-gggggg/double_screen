@@ -1,0 +1,15 @@
+[package]
+name = "splitdesk-media"
+description = "Capture/encode/input traits, latest-frame slot, and NVENC pipeline description"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+splitdesk-core.workspace = true
+parking_lot.workspace = true
+splitdesk-protocol.workspace = true
+serde.workspace = true
+tracing.workspace = true

@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+.idea/
+.vscode/
+*.pdb
+*.log
+.env
+.session-token
+*.token
+daemon.token
+.serena/
+/artifacts

@@ -1,0 +1,40 @@
+[package]
+name = "splitdeskd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SplitDesk local control daemon (JSON-lines, localhost)"
+
+[lib]
+name = "splitdeskd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "splitdeskd"
+path = "src/main.rs"
+
+[dependencies]
+splitdesk-core.workspace = true
+splitdesk-protocol.workspace = true
+splitdesk-media.workspace = true
+splitdesk-session.workspace = true
+splitdesk-metrics.workspace = true
+splitdesk-host-linux.workspace = true
+splitdesk-host-windows.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

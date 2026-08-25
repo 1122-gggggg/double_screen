@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+
+# CPU runners only. GPU tests are #[ignore = "requires-gpu"].
+# Do not run cargo test -- --ignored.
+# Do not install fake NVIDIA/DXGI/PipeWire devices, dummy kernel
+# modules, or software NVENC stubs to make those tests pass.
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt, clippy
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --all-targets
+
+      - name: build
+        run: cargo build --workspace --all-targets
+
+      - name: refuse ignored GPU tests on CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo test --workspace --all-targets -- --list --ignored --format terse 2>/dev/null | grep -qi 'requires-gpu'; then
+            echo "GPU tests are listed as ignored (requires-gpu). CI will not execute them."
+          fi
+          echo "Skipping cargo test -- --ignored (would run requires-gpu on a CPU runner)."

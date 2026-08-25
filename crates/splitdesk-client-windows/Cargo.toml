@@ -1,0 +1,23 @@
+[package]
+name = "splitdesk-client-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SplitDesk Windows client"
+
+[[bin]]
+name = "splitdesk-client-windows"
+path = "src/main.rs"
+
+[dependencies]
+splitdesk-core.workspace = true
+splitdesk-client-core.workspace = true
+splitdeskd = { path = "../splitdeskd" }
+minifb = "0.28"
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
