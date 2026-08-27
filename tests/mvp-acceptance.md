@@ -35,6 +35,10 @@ Unchecked on purpose. Tick a box only after the behavior was exercised on a real
 - [ ] Does not take seat0 DRM master
 - [ ] Headless / EGLDevice preferred over grabbing the login seat
 - [ ] `splitdesk-host-linux` compiles on Windows; live spawn returns `BackendUnavailable`
+- [ ] Two real users have different Weston PIDs, UIDs, Wayland sockets, input sockets, and PipeWire namespaces
+- [ ] A second active session for the same user → `IsolationViolation`
+- [ ] Weston module injects only into its compositor-local `weston_seat`
+- [ ] Dropping a media connection releases every key/button in that virtual seat
 
 ## Windows host
 
@@ -86,6 +90,9 @@ Unchecked on purpose. Tick a box only after the behavior was exercised on a real
 - [ ] No unbounded media queues
 - [ ] `MemoryPath` includes `cpu_copies_per_frame` (not claimed zero-copy)
 - [ ] Encoder/capture/input/clipboard/audio traits exist; GPU tests `#[ignore = "requires-gpu"]`
+- [ ] Linux live path is `pipewiresrc → GLMemory → nvh264enc`, not a capability-only stub
+- [ ] Each relayed H.264 access unit contains AUD + SPS + PPS + IDR
+- [ ] Native client decodes an NVENC H.264 packet and displays the expected pixels
 
 ## Metrics
 

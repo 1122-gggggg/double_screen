@@ -16,8 +16,8 @@ pub use handshake::{select_codec, Hello, HelloAck, InputCaps, PROTOCOL_VERSION};
 pub use input::{Input, InputChannels};
 pub use media::{
     encode_media_frame, encode_media_frame_header, try_decode_media_frame,
-    try_decode_media_frame_bytes, MediaFrame, MediaHello, MediaHelloAck, DEFAULT_MEDIA_BIND,
-    MEDIA_FORMAT_BGRA, MEDIA_HEADER_LEN, MEDIA_MAGIC,
+    try_decode_media_frame_bytes, MediaFormat, MediaFrame, MediaHello, MediaHelloAck,
+    DEFAULT_MEDIA_BIND, MEDIA_FORMAT_BGRA, MEDIA_FORMAT_H264, MEDIA_HEADER_LEN, MEDIA_MAGIC,
 };
 
 use serde::{Deserialize, Serialize};

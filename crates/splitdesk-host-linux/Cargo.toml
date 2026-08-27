@@ -9,6 +9,8 @@ description = "Linux Weston session backend for SplitDesk"
 
 [dependencies]
 splitdesk-core.workspace = true
+splitdesk-media.workspace = true
+splitdesk-protocol.workspace = true
 splitdesk-session.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

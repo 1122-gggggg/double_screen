@@ -1,19 +1,23 @@
 //! Linux host session backend.
 //!
-//! Per-user Weston is spawned as that UID with `-Bpipewire --renderer=gl`
-//! and an independent `--socket`. If the PipeWire backend is missing, the
-//! fallback is `-Bheadless --renderer=gl` (EGL surfaceless). Neither path
-//! takes seat0 DRM master. `-Bdrm` is never used.
+//! Per-user Weston is spawned as that UID with `-Bpipewire --renderer=gl`, an
+//! independent Wayland socket, and a compositor-local virtual seat. The live
+//! path requires PipeWire and NVENC; it fails closed instead of reporting a
+//! headless session with no transport. It never takes seat0 DRM master.
 
 mod backend;
 mod detect;
 mod diagnostics;
+mod input;
+mod media;
 #[cfg(target_os = "linux")]
 mod spawn;
 
-pub use backend::{wayland_display_for, LinuxSessionBackend};
+pub use backend::{wayland_display_for, LinuxSessionBackend, LinuxSessionRuntime};
 pub use detect::{detect_host_features, detect_linux_capabilities, HostFeatures};
 pub use diagnostics::{diagnostics_gpu, GpuDiagnostics};
+pub use input::WestonInputBackend;
+pub use media::{AnnexBAccessUnitReader, PipeWireNvencCapture};
 
 pub use splitdesk_core::{
     CaptureKind, CreateSessionRequest, EncoderKind, Error, HostOs, Resolution, SessionId,

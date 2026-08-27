@@ -6,14 +6,15 @@ Latency over quality. Latest-frame-wins. Bounded queues (depth 1 for motion and 
 
 ## Status
 
-Version `0.1.0`. Not a finished multi-user GPU product.
+Version `0.1.0`. Linux multi-user runtime is implemented; GPU acceptance still
+has to be exercised on the target NVIDIA host because public CI is CPU-only.
 
 | Path | Honest state |
 | --- | --- |
 | Windows 10/11 host, one interactive session | **Usable loopback:** DXGI Desktop Duplication → CPU BGRA readback (`cpu_copies=1`) → SDFR on `127.0.0.1:9824` → native minifb client |
 | Windows second interactive session | `MultiUserNotSupportedByHostOs` (no RDS bypass) |
-| Linux multi-user Weston / PipeWire / NVENC | Code present, **not proven** on this tree’s CI host |
-| H.264 NVENC live encode | Capability probe only; live path is BGRA SDFR, not NVENC |
+| Linux multi-user Weston / PipeWire / NVENC | **Implemented, hardware-gated:** one Weston + virtual seat per user, PipeWire → GLMemory → NVENC |
+| H.264 NVENC live encode | Live Annex-B IDR access units over SDFR; native clients decode with OpenH264 |
 | End-to-end latency p50/p95 | **NOT MEASURED** |
 
 What this is **not**:
@@ -54,6 +55,15 @@ cargo build --workspace --release
 ```
 
 No GPU is required to **compile**. A GPU is required to **encode/capture** on the non-fallback path.
+
+Linux installation also builds the version-matched Weston input module:
+
+```text
+sudo packaging/linux/install.sh
+```
+
+See [Linux host](docs/linux-host.md) for Weston ≥13, PipeWire, GStreamer
+nvcodec, NVIDIA driver, and per-user PipeWire prerequisites.
 
 ```text
 cargo run -p splitdeskd
@@ -97,7 +107,7 @@ Daemon IPC is JSON-lines, authenticated with a token generated at daemon start (
 
 ## Host rules (short)
 
-- **Linux:** look up the user, set `WAYLAND_DISPLAY=splitdesk-<id>`, spawn Weston as that UID (not root). If the daemon is root, `systemd-run --uid=…`. If it is not root, only the current user. Do not take seat0 DRM master. Prefer headless / EGLDevice.
+- **Linux:** one active session per user. Spawn `weston -Bpipewire --renderer=gl` as that UID, load the compositor-local SplitDesk seat, and capture that user's `weston.pipewire` node with NVENC. Never take seat0 DRM master.
 - **Windows 10/11:** at most one interactive session. Windows Server RDS is a separate `SessionSupport` value, not a back door on workstation SKUs.
 
 ## Prohibited shortcuts

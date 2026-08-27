@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Error as IoError, ErrorKind, IoSlice};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,24 +22,31 @@ pub(crate) struct SessionFrameSlot {
     latest: BoundedSlot<MediaFrame>,
     ready: Notify,
     live_capture: AtomicBool,
+    input: Option<SessionInputEndpoint>,
+}
+
+#[derive(Clone)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct SessionInputEndpoint {
+    pub socket: PathBuf,
+    pub uid: u32,
 }
 
 impl SessionFrameSlot {
-    fn new() -> Self {
+    fn new(input: Option<SessionInputEndpoint>) -> Self {
         Self {
             latest: BoundedSlot::new(),
             ready: Notify::new(),
             live_capture: AtomicBool::new(false),
+            input,
         }
     }
 
-    #[cfg(windows)]
     pub(crate) fn push(&self, frame: MediaFrame) {
         self.latest.push(frame);
         self.ready.notify_one();
     }
 
-    #[cfg(windows)]
     pub(crate) fn set_live_capture(&self, live: bool) {
         self.live_capture.store(live, Ordering::Release);
     }
@@ -65,8 +73,12 @@ impl FrameHub {
         }
     }
 
-    pub(crate) fn register(&self, id: SessionId) -> Arc<SessionFrameSlot> {
-        let slot = Arc::new(SessionFrameSlot::new());
+    pub(crate) fn register(
+        &self,
+        id: SessionId,
+        input: Option<SessionInputEndpoint>,
+    ) -> Arc<SessionFrameSlot> {
+        let slot = Arc::new(SessionFrameSlot::new(input));
         self.slots.lock().insert(id, Arc::clone(&slot));
         slot
     }
@@ -215,7 +227,7 @@ async fn handle_media_connection(
     .await?;
 
     tokio::select! {
-        result = receive_inputs(lines) => result?,
+        result = receive_inputs(lines, slot.input.clone()) => result?,
         result = send_frames(&mut writer, slot) => result?,
     }
     Ok(())
@@ -271,9 +283,22 @@ where
     Ok(())
 }
 
-async fn receive_inputs(mut lines: Lines<BufReader<OwnedReadHalf>>) -> anyhow::Result<()> {
+async fn receive_inputs(
+    mut lines: Lines<BufReader<OwnedReadHalf>>,
+    input: Option<SessionInputEndpoint>,
+) -> anyhow::Result<()> {
     #[cfg(windows)]
     let mut backend = InputBackendGuard(splitdesk_host_windows::WindowsInputBackend::new());
+    #[cfg(windows)]
+    let _ = &input;
+    #[cfg(target_os = "linux")]
+    let mut backend = {
+        let input = input.ok_or_else(|| anyhow::anyhow!("Linux session input endpoint missing"))?;
+        splitdesk_host_linux::WestonInputBackend::connect(&input.socket, input.uid)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+    };
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = input;
 
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
@@ -284,10 +309,9 @@ async fn receive_inputs(mut lines: Lines<BufReader<OwnedReadHalf>>) -> anyhow::R
         if let Err(err) = backend.0.inject(&input) {
             tracing::warn!(error = %err, "Windows input injection failed");
         }
-        #[cfg(not(windows))]
-        {
-            let _ = input;
-            tracing::warn!("remote input ignored on non-Windows host");
+        #[cfg(target_os = "linux")]
+        if let Err(err) = backend.inject(&input) {
+            return Err(anyhow::anyhow!("Weston input injection failed: {err}"));
         }
     }
     Ok(())

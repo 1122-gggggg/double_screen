@@ -8,13 +8,14 @@ use std::{
 
 use bytes::BytesMut;
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Scale, Window, WindowOptions};
+use openh264::{decoder::Decoder as H264Decoder, formats::YUVSource, OpenH264API};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use splitdesk_core::{Codec, Error, SessionId, UserName};
 use splitdesk_media::BoundedSlot;
 use splitdesk_protocol::{
-    try_decode_media_frame_bytes, Hello, Input, InputCaps, InputChannels, MediaFrame, MediaHello,
-    MediaHelloAck, Position, DEFAULT_MEDIA_BIND, PROTOCOL_VERSION,
+    try_decode_media_frame_bytes, Hello, Input, InputCaps, InputChannels, MediaFormat, MediaFrame,
+    MediaHello, MediaHelloAck, Position, DEFAULT_MEDIA_BIND, PROTOCOL_VERSION,
 };
 use splitdeskd::{rpc_with_token, DaemonCommand, DaemonResult, DEFAULT_BIND};
 use tokio::{
@@ -370,12 +371,19 @@ impl ClientCore {
         let frames = Arc::clone(&self.frames);
         self.media_reader_task = Some(tokio::spawn(async move {
             let mut bytes = pending;
+            let mut h264_decoder: Option<H264Decoder> = None;
             loop {
                 loop {
                     match try_decode_media_frame_bytes(&mut bytes) {
-                        Ok(Some(frame)) => {
-                            frames.push(frame);
-                        }
+                        Ok(Some(frame)) => match decode_media_frame(frame, &mut h264_decoder) {
+                            Ok(Some(frame)) => {
+                                frames.push(frame);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "H.264 media decode failed");
+                            }
+                        },
                         Ok(None) => break,
                         Err(_) => {
                             tracing::warn!("media stream protocol error");
@@ -709,6 +717,9 @@ impl WindowedClient {
 }
 
 fn bgra_to_minifb(frame: &MediaFrame, out: &mut Vec<u32>) -> Option<(usize, usize)> {
+    if frame.format != MediaFormat::Bgra {
+        return None;
+    }
     let width = usize::try_from(frame.width).ok()?;
     let height = usize::try_from(frame.height).ok()?;
     let stride = usize::try_from(frame.stride).ok()?;
@@ -729,6 +740,53 @@ fn bgra_to_minifb(frame: &MediaFrame, out: &mut Vec<u32>) -> Option<(usize, usiz
         }
     }
     Some((width, height))
+}
+
+fn decode_media_frame(
+    frame: MediaFrame,
+    decoder: &mut Option<H264Decoder>,
+) -> Result<Option<MediaFrame>, String> {
+    if frame.format == MediaFormat::Bgra {
+        return Ok(Some(frame));
+    }
+
+    let decoder = match decoder {
+        Some(decoder) => decoder,
+        slot @ None => {
+            let created =
+                H264Decoder::new(OpenH264API::from_source()).map_err(|error| error.to_string())?;
+            slot.insert(created)
+        }
+    };
+    let Some(yuv) = decoder
+        .decode(&frame.pixels)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let width = u32::try_from(yuv.width()).map_err(|_| "invalid decoded width".to_string())?;
+    let height = u32::try_from(yuv.height()).map_err(|_| "invalid decoded height".to_string())?;
+    let len = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "decoded frame size overflow".to_string())?;
+    let mut rgba = vec![0; len];
+    yuv.write_rgba8(&mut rgba);
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Ok(Some(MediaFrame::bgra(
+        width,
+        height,
+        frame.timestamp_ns,
+        frame.cpu_copies,
+        rgba,
+    )))
 }
 
 fn minifb_key_to_vk(key: Key) -> Option<u32> {

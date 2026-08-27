@@ -59,7 +59,7 @@ types, not a slogan.
 | 4 | NVIDIA headless OpenGL / Vulkan | **PARTIAL** |
 | 5 | PipeWire frames stay DMA-BUF / GPU-resident into GStreamer | **PARTIAL** |
 | 6 | GStreamer `nvh264enc` GPU memory types | **PARTIAL** (`CUDAMemory`/`GLMemory` yes; `DMABuf` **UNSUPPORTED**) |
-| 7 | Per-session Weston input (not uinput / xdotool) | **PARTIAL** |
+| 7 | Per-session Weston input (not uinput / xdotool) | **PARTIAL upstream; IMPLEMENTED by SplitDesk module** |
 | 8 | libei / libeis placement | **PARTIAL** |
 | 9 | XWayland GPU accel under per-user Weston / headless | **PARTIAL** |
 | 10 | CloudCompare (Qt + OpenGL, often X11) | **UNKNOWN** |
@@ -429,6 +429,12 @@ channel → Ultra-low latency + CBR.
 ## Q7. How should Weston / libweston do per-session remote input (not uinput / xdotool)?
 
 **Verdict: PARTIAL**
+
+This verdict describes stock upstream Weston, which still has no
+SplitDesk-protocol input back-end. SplitDesk now implements the documented
+custom-module path in `native/weston-input`: every Weston process creates its
+own virtual seat and accepts input only through its private, owner-only UNIX
+socket. The module is built against the installed libweston major version.
 
 Official Weston documents that **the back-end owns input**. The
 PipeWire back-end is explicitly **output-only**. Headless is **no

@@ -31,6 +31,18 @@ jobs:
           toolchain: "1.85.0"
           components: rustfmt, clippy
 
+      - name: Install Weston module build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build libwayland-dev libweston-13-dev
+
+      - name: Build Weston input module
+        if: runner.os == 'Linux'
+        run: |
+          meson setup target/weston-input native/weston-input --prefix /usr --libdir lib -Dwerror=true
+          meson compile -C target/weston-input
+
       - name: rustfmt
         run: cargo fmt --all -- --check
 

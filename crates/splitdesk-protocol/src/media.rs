@@ -3,12 +3,34 @@ use splitdesk_core::Error;
 
 pub const MEDIA_MAGIC: [u8; 4] = *b"SDFR";
 pub const MEDIA_FORMAT_BGRA: u32 = 1;
+pub const MEDIA_FORMAT_H264: u32 = 2;
 pub const MEDIA_HEADER_LEN: usize = 36;
 pub const DEFAULT_MEDIA_BIND: &str = "127.0.0.1:9824";
 pub const MAX_MEDIA_PIXELS: usize = 7680 * 4320 * 4;
+const MAX_ENCODED_FRAME: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum MediaFormat {
+    Bgra = MEDIA_FORMAT_BGRA,
+    H264 = MEDIA_FORMAT_H264,
+}
+
+impl TryFrom<u32> for MediaFormat {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            MEDIA_FORMAT_BGRA => Ok(Self::Bgra),
+            MEDIA_FORMAT_H264 => Ok(Self::H264),
+            _ => Err(Error::Protocol),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaFrame {
+    pub format: MediaFormat,
     pub width: u32,
     pub height: u32,
     pub stride: u32,
@@ -26,12 +48,29 @@ impl MediaFrame {
     {
         let stride = width.saturating_mul(4);
         Self {
+            format: MediaFormat::Bgra,
             width,
             height,
             stride,
             timestamp_ns,
             cpu_copies,
             pixels: pixels.into(),
+        }
+    }
+
+    /// One independently decodable H.264 Annex-B access unit.
+    ///
+    /// Linux emits an IDR with SPS/PPS for every packet so a depth-1 relay may
+    /// discard stale packets without breaking the decoder reference chain.
+    pub fn h264(width: u32, height: u32, timestamp_ns: u64, payload: impl Into<Bytes>) -> Self {
+        Self {
+            format: MediaFormat::H264,
+            width,
+            height,
+            stride: 0,
+            timestamp_ns,
+            cpu_copies: 0,
+            pixels: payload.into(),
         }
     }
 }
@@ -42,7 +81,7 @@ fn media_header(frame: &MediaFrame, payload_len: u32) -> [u8; MEDIA_HEADER_LEN] 
     out[4..8].copy_from_slice(&frame.width.to_le_bytes());
     out[8..12].copy_from_slice(&frame.height.to_le_bytes());
     out[12..16].copy_from_slice(&frame.stride.to_le_bytes());
-    out[16..20].copy_from_slice(&MEDIA_FORMAT_BGRA.to_le_bytes());
+    out[16..20].copy_from_slice(&(frame.format as u32).to_le_bytes());
     out[20..28].copy_from_slice(&frame.timestamp_ns.to_le_bytes());
     out[28..32].copy_from_slice(&frame.cpu_copies.to_le_bytes());
     out[32..36].copy_from_slice(&payload_len.to_le_bytes());
@@ -52,7 +91,7 @@ fn media_header(frame: &MediaFrame, payload_len: u32) -> [u8; MEDIA_HEADER_LEN] 
 /// Builds only the fixed-size wire header so callers can write the header and
 /// shared pixel storage as separate buffers without copying the full frame.
 pub fn encode_media_frame_header(frame: &MediaFrame) -> Result<[u8; MEDIA_HEADER_LEN], Error> {
-    if frame.pixels.len() > MAX_MEDIA_PIXELS {
+    if !valid_payload_len(frame.format, frame.pixels.len()) {
         return Err(Error::Protocol);
     }
     let payload_len = u32::try_from(frame.pixels.len()).map_err(|_| Error::Protocol)?;
@@ -70,6 +109,7 @@ pub fn encode_media_frame(frame: &MediaFrame) -> Vec<u8> {
 }
 
 struct DecodedHeader {
+    format: MediaFormat,
     width: u32,
     height: u32,
     stride: u32,
@@ -88,17 +128,15 @@ fn try_decode_header(buf: &[u8]) -> Result<Option<DecodedHeader>, Error> {
     let width = u32::from_le_bytes(buf[4..8].try_into().unwrap());
     let height = u32::from_le_bytes(buf[8..12].try_into().unwrap());
     let stride = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-    let format = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+    let format = MediaFormat::try_from(u32::from_le_bytes(buf[16..20].try_into().unwrap()))?;
     let timestamp_ns = u64::from_le_bytes(buf[20..28].try_into().unwrap());
     let cpu_copies = u32::from_le_bytes(buf[28..32].try_into().unwrap());
     let payload_len = u32::from_le_bytes(buf[32..36].try_into().unwrap()) as usize;
-    if format != MEDIA_FORMAT_BGRA {
-        return Err(Error::Protocol);
-    }
-    if payload_len > MAX_MEDIA_PIXELS {
+    if !valid_payload_len(format, payload_len) {
         return Err(Error::Protocol);
     }
     Ok(Some(DecodedHeader {
+        format,
         width,
         height,
         stride,
@@ -119,6 +157,7 @@ pub fn try_decode_media_frame(buf: &mut Vec<u8>) -> Result<Option<MediaFrame>, E
         Bytes::copy_from_slice(&buf[MEDIA_HEADER_LEN..MEDIA_HEADER_LEN + header.payload_len]);
     buf.drain(..MEDIA_HEADER_LEN + header.payload_len);
     Ok(Some(MediaFrame {
+        format: header.format,
         width: header.width,
         height: header.height,
         stride: header.stride,
@@ -140,6 +179,7 @@ pub fn try_decode_media_frame_bytes(buf: &mut BytesMut) -> Result<Option<MediaFr
     buf.advance(MEDIA_HEADER_LEN);
     let pixels = buf.split_to(header.payload_len).freeze();
     Ok(Some(MediaFrame {
+        format: header.format,
         width: header.width,
         height: header.height,
         stride: header.stride,
@@ -147,6 +187,13 @@ pub fn try_decode_media_frame_bytes(buf: &mut BytesMut) -> Result<Option<MediaFr
         cpu_copies: header.cpu_copies,
         pixels,
     }))
+}
+
+fn valid_payload_len(format: MediaFormat, payload_len: usize) -> bool {
+    match format {
+        MediaFormat::Bgra => payload_len <= MAX_MEDIA_PIXELS,
+        MediaFormat::H264 => payload_len <= MAX_ENCODED_FRAME,
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -221,5 +268,15 @@ mod tests {
         let header = encode_media_frame_header(&frame).unwrap();
         let encoded = encode_media_frame(&frame);
         assert_eq!(header.as_slice(), &encoded[..MEDIA_HEADER_LEN]);
+    }
+
+    #[test]
+    fn h264_access_unit_roundtrip() {
+        let frame = MediaFrame::h264(1920, 1080, 99, vec![0, 0, 0, 1, 9, 0xf0]);
+        let mut wire = encode_media_frame(&frame);
+        let decoded = try_decode_media_frame(&mut wire).unwrap().unwrap();
+        assert_eq!(decoded, frame);
+        assert_eq!(decoded.format, MediaFormat::H264);
+        assert_eq!(decoded.stride, 0);
     }
 }

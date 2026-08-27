@@ -125,4 +125,23 @@ mod tests {
         assert!(report.path.cpu_copies_per_frame >= 1);
         assert!(report.copy_warning);
     }
+
+    #[test]
+    fn weston_pipewire_pipeline_is_drop_safe_nvenc() {
+        let pipe = GstNvencPipeline::new(NvencSettings::default(), MemoryType::DmaBuf);
+        let launch = pipe
+            .weston_pipewire_parse_launch("weston.pipewire")
+            .unwrap();
+        assert!(launch.contains("pipewiresrc target-object=weston.pipewire"));
+        assert!(launch.contains("memory:DMABuf"));
+        assert!(launch.contains("glupload"));
+        assert!(launch.contains("memory:GLMemory"));
+        assert!(launch.contains("nvh264enc"));
+        assert!(launch.contains("gop-size=1"));
+        assert!(launch.contains("repeat-sequence-header=true"));
+        assert!(launch.contains("alignment=au"));
+        assert!(launch.contains("fdsink fd=1"));
+        assert!(!launch.contains("appsink"));
+        assert!(pipe.weston_pipewire_parse_launch("bad target").is_err());
+    }
 }

@@ -1,6 +1,6 @@
 #[cfg(not(windows))]
 use splitdesk_core::EncoderKind;
-#[cfg(windows)]
+#[cfg(any(target_os = "linux", windows))]
 use splitdesk_core::MemoryType;
 use splitdesk_core::{Capabilities, MemoryPath};
 
@@ -53,8 +53,17 @@ pub fn media_path_for(caps: &Capabilities, live_capture: bool) -> MemoryPath {
         }
         MemoryPath::system_copies(1)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
+        if caps.pipewire && matches!(caps.encoder, EncoderKind::Nvenc) {
+            return MemoryPath {
+                render_output: MemoryType::DmaBuf,
+                capture: MemoryType::DmaBuf,
+                conversion: MemoryType::GlMemory,
+                encoder_input: MemoryType::GlMemory,
+                cpu_copies_per_frame: 0,
+            };
+        }
         let _ = live_capture;
         if matches!(caps.encoder, EncoderKind::SoftwareFallback) {
             tracing::warn!(
@@ -62,6 +71,11 @@ pub fn media_path_for(caps: &Capabilities, live_capture: bool) -> MemoryPath {
                 "software encoder path copies frames through system memory"
             );
         }
+        MemoryPath::system_copies(1)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (caps, live_capture);
         MemoryPath::system_copies(1)
     }
 }

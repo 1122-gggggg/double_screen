@@ -157,6 +157,49 @@ impl GstNvencPipeline {
         ]
     }
 
+    /// PipeWire capture pipeline used by a headless Weston session.
+    ///
+    /// The PipeWire DMA-BUF is imported through GL because `nvh264enc` does
+    /// not advertise DMA-BUF on its sink. Every output access unit is an IDR
+    /// with repeated SPS/PPS: the daemon's depth-1 relay can therefore drop an
+    /// old access unit without corrupting the next one.
+    pub fn weston_pipewire_parse_launch(&self, target_object: &str) -> Result<String, Error> {
+        self.settings.validate()?;
+        if target_object.is_empty()
+            || !target_object
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+        {
+            return Err(unavailable("invalid PipeWire target object"));
+        }
+        let s = &self.settings;
+        Ok(format!(
+            "pipewiresrc target-object={target_object} do-timestamp=true ! \
+             queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! \
+             video/x-raw(memory:DMABuf) ! \
+             glupload ! glcolorconvert ! \
+             video/x-raw(memory:GLMemory),format=NV12,width={},height={},framerate={}/1 ! \
+             nvh264enc name=sd_enc zerolatency=true bframes=0 bitrate={} gop-size=1 \
+             aud=true repeat-sequence-header=true rc-mode=cbr preset=p1 \
+             tune=ultra-low-latency rc-lookahead=0 b-adapt=false multi-pass=disabled \
+             vbv-buffer-size={} ! h264parse config-interval=-1 disable-passthrough=true ! \
+             video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au ! \
+             fdsink fd=1 sync=false async=false",
+            s.width,
+            s.height,
+            s.fps,
+            s.bitrate,
+            s.vbv_buffer_kbits(),
+        ))
+    }
+
+    pub fn weston_pipewire_argv(&self, target_object: &str) -> Result<Vec<String>, Error> {
+        let launch = self.weston_pipewire_parse_launch(target_object)?;
+        let mut argv = vec!["gst-launch-1.0".to_string(), "-q".to_string()];
+        argv.extend(launch.split_ascii_whitespace().map(str::to_string));
+        Ok(argv)
+    }
+
     pub fn memory_path(&self) -> MemoryPath {
         path_for_input(self.input_memory)
     }

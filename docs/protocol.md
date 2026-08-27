@@ -52,6 +52,18 @@ u32 little-endian length || UTF-8 JSON payload
 
 Length is the byte count of the JSON only, not including the four-byte prefix.
 
+Live video uses the fixed 36-byte `SDFR` header followed by its payload:
+
+```text
+magic[4] | width:u32 | height:u32 | stride:u32 | format:u32 |
+timestamp_ns:u64 | cpu_copies:u32 | payload_len:u32
+```
+
+`format=1` is BGRA and `format=2` is one H.264 Annex-B access unit. Linux sends
+an IDR with SPS/PPS in every H.264 packet, so the depth-1 latest-frame relay may
+drop a stale packet without breaking the next decode. Payloads are bounded to
+the 8K BGRA limit or 16 MiB for an encoded access unit.
+
 Motion (`PointerMotion`) may be sent on a drop-old path: keep the latest sample only. A sender or receiver with an unread motion sample **overwrites** it. Do not build a motion queue.
 
 Buttons, keys, and control messages are reliable. They are not dropped for latency. Ordering of reliable messages is preserved.
@@ -104,6 +116,10 @@ Codec preference: **H.264 first**. HEVC and AV1 are advertised in `Capabilities.
 | `Scroll` | `dx`, `dy`, `ts` | Latest-wins on the axis pair; do not unbounded-queue |
 
 `ts` is the sender’s clock (`ClientLocal` for client-originated input). Do not treat it as `ServerLocal`.
+
+Protocol-v1 `keycode` is the canonical Windows virtual-key value emitted by
+the native clients. Windows injects it directly; the Weston input module maps
+it to Linux evdev codes before calling libweston.
 
 ## Cursor
 
