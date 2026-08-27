@@ -38,6 +38,7 @@ pub struct DxgiDuplicationCapture {
     started: bool,
     last: Option<D3D11TextureHandle>,
     resolution: Resolution,
+    #[cfg(windows)]
     frame_seq: u64,
     #[cfg(windows)]
     live: Option<LiveDuplication>,
@@ -64,6 +65,7 @@ impl DxgiDuplicationCapture {
             started: false,
             last: None,
             resolution: Resolution::default(),
+            #[cfg(windows)]
             frame_seq: 0,
             #[cfg(windows)]
             live: None,
@@ -128,11 +130,11 @@ impl CaptureBackend for DxgiDuplicationCapture {
         #[cfg(not(windows))]
         {
             self.started = false;
-            return Err(Error::BackendUnavailable {
+            Err(Error::BackendUnavailable {
                 detail: "DXGI Desktop Duplication is not compiled on this target; \
                          MemoryType::D3D11 is the intended path, CPU BitBlt is not used"
                     .into(),
-            });
+            })
         }
         #[cfg(windows)]
         {
@@ -574,14 +576,13 @@ fn acquire_bgra(
         }
     }
 
-    Ok(Some(splitdesk_protocol::MediaFrame {
-        width: desc.Width,
-        height: desc.Height,
-        stride: row_bytes_u32,
-        timestamp_ns: server_timestamp_ns(),
-        cpu_copies: 1,
+    Ok(Some(splitdesk_protocol::MediaFrame::bgra(
+        desc.Width,
+        desc.Height,
+        server_timestamp_ns(),
+        1,
         pixels,
-    }))
+    )))
 }
 
 #[cfg(test)]

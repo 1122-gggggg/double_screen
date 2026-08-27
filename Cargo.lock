@@ -799,6 +799,7 @@ dependencies = [
 name = "splitdesk-client-core"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "minifb",
  "parking_lot",
  "serde",
@@ -900,6 +901,7 @@ dependencies = [
 name = "splitdesk-protocol"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "parking_lot",
  "serde",
  "serde_json",

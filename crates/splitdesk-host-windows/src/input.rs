@@ -1,9 +1,12 @@
 use splitdesk_core::Error;
 use splitdesk_protocol::Input;
+#[cfg(windows)]
 use std::collections::HashSet;
 
 pub struct WindowsInputBackend {
+    #[cfg(windows)]
     keys_down: HashSet<u16>,
+    #[cfg(windows)]
     buttons_down: HashSet<u32>,
 }
 
@@ -16,7 +19,9 @@ impl Default for WindowsInputBackend {
 impl WindowsInputBackend {
     pub fn new() -> Self {
         Self {
+            #[cfg(windows)]
             keys_down: HashSet::new(),
+            #[cfg(windows)]
             buttons_down: HashSet::new(),
         }
     }

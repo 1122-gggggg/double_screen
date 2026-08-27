@@ -72,6 +72,8 @@ cargo run -p splitdesk-client-windows -- --user %USERNAME% --session sd-001
 
 Control plane: `127.0.0.1:9823` (token in `%LOCALAPPDATA%\\SplitDesk\\daemon.token`).
 Media plane: `127.0.0.1:9824` after `MediaHello`. Frames are SDFR BGRA, latest-wins.
+SDFR framing uses shared frame storage, vectored socket writes, and zero-copy client buffer splits;
+it does not add full-payload copies beyond the documented capture/readback path.
 A second `session create` on Windows 10/11 fails with `MultiUserNotSupportedByHostOs`.
 
 ## CLI

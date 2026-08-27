@@ -6,13 +6,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::BytesMut;
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Scale, Window, WindowOptions};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use splitdesk_core::{Codec, Error, SessionId, UserName};
 use splitdesk_media::BoundedSlot;
 use splitdesk_protocol::{
-    try_decode_media_frame, Hello, Input, InputCaps, InputChannels, MediaFrame, MediaHello,
+    try_decode_media_frame_bytes, Hello, Input, InputCaps, InputChannels, MediaFrame, MediaHello,
     MediaHelloAck, Position, DEFAULT_MEDIA_BIND, PROTOCOL_VERSION,
 };
 use splitdeskd::{rpc_with_token, DaemonCommand, DaemonResult, DEFAULT_BIND};
@@ -363,7 +364,7 @@ impl ClientCore {
             });
         }
 
-        let pending = buffered.buffer().to_vec();
+        let pending = BytesMut::from(buffered.buffer());
         let stream = buffered.into_inner();
         let (mut reader, mut writer) = stream.into_split();
         let frames = Arc::clone(&self.frames);
@@ -371,7 +372,7 @@ impl ClientCore {
             let mut bytes = pending;
             loop {
                 loop {
-                    match try_decode_media_frame(&mut bytes) {
+                    match try_decode_media_frame_bytes(&mut bytes) {
                         Ok(Some(frame)) => {
                             frames.push(frame);
                         }

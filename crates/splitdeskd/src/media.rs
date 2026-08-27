@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::{Error as IoError, ErrorKind, IoSlice};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,9 +7,9 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use splitdesk_core::SessionId;
 use splitdesk_media::BoundedSlot;
-use splitdesk_protocol::{encode_media_frame, Input, MediaFrame, MediaHello, MediaHelloAck};
+use splitdesk_protocol::{encode_media_frame_header, Input, MediaFrame, MediaHello, MediaHelloAck};
 use splitdesk_session::SessionManager;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
@@ -31,11 +32,13 @@ impl SessionFrameSlot {
         }
     }
 
+    #[cfg(windows)]
     pub(crate) fn push(&self, frame: MediaFrame) {
         self.latest.push(frame);
         self.ready.notify_one();
     }
 
+    #[cfg(windows)]
     pub(crate) fn set_live_capture(&self, live: bool) {
         self.live_capture.store(live, Ordering::Release);
     }
@@ -232,12 +235,40 @@ async fn send_frames(
 ) -> anyhow::Result<()> {
     loop {
         let frame = slot.take_latest().await;
-        let payload = encode_media_frame(&frame);
-        match tokio::time::timeout(Duration::from_secs(2), writer.write_all(&payload)).await {
+        match tokio::time::timeout(Duration::from_secs(2), write_media_frame(writer, &frame)).await
+        {
             Ok(result) => result?,
             Err(_) => anyhow::bail!("media client write timed out"),
         }
     }
+}
+
+async fn write_media_frame<W>(writer: &mut W, frame: &MediaFrame) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let header = encode_media_frame_header(frame)?;
+    let total_len = header.len() + frame.pixels.len();
+    let mut written = 0;
+
+    while written < total_len {
+        let count = if written < header.len() {
+            let slices = [
+                IoSlice::new(&header[written..]),
+                IoSlice::new(&frame.pixels),
+            ];
+            writer.write_vectored(&slices).await?
+        } else {
+            writer
+                .write(&frame.pixels[written - header.len()..])
+                .await?
+        };
+        if count == 0 {
+            return Err(IoError::new(ErrorKind::WriteZero, "failed to write media frame").into());
+        }
+        written += count;
+    }
+    Ok(())
 }
 
 async fn receive_inputs(mut lines: Lines<BufReader<OwnedReadHalf>>) -> anyhow::Result<()> {
@@ -271,5 +302,26 @@ impl Drop for InputBackendGuard {
         if let Err(err) = self.0.release_all() {
             tracing::warn!(error = %err, "failed to release Windows input state");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splitdesk_protocol::encode_media_frame;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn vectored_frame_write_preserves_wire_format() {
+        let frame = MediaFrame::bgra(2, 1, 42, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let expected = encode_media_frame(&frame);
+        let (mut writer, mut reader) = tokio::io::duplex(expected.len());
+
+        write_media_frame(&mut writer, &frame).await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut actual = Vec::new();
+        reader.read_to_end(&mut actual).await.unwrap();
+        assert_eq!(actual, expected);
     }
 }

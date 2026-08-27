@@ -15,8 +15,9 @@ pub use cursor::{Cursor, Hotspot, Position};
 pub use handshake::{select_codec, Hello, HelloAck, InputCaps, PROTOCOL_VERSION};
 pub use input::{Input, InputChannels};
 pub use media::{
-    encode_media_frame, try_decode_media_frame, MediaFrame, MediaHello, MediaHelloAck,
-    DEFAULT_MEDIA_BIND, MEDIA_FORMAT_BGRA, MEDIA_MAGIC,
+    encode_media_frame, encode_media_frame_header, try_decode_media_frame,
+    try_decode_media_frame_bytes, MediaFrame, MediaHello, MediaHelloAck, DEFAULT_MEDIA_BIND,
+    MEDIA_FORMAT_BGRA, MEDIA_HEADER_LEN, MEDIA_MAGIC,
 };
 
 use serde::{Deserialize, Serialize};

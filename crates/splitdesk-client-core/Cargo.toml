@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "OS-agnostic SplitDesk client session, cursor, and frame state"
 
 [dependencies]
+bytes.workspace = true
 splitdesk-core.workspace = true
 splitdesk-protocol.workspace = true
 splitdesk-metrics.workspace = true

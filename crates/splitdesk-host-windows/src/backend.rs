@@ -9,6 +9,7 @@ use splitdesk_core::{
 use splitdesk_session::{SessionBackend, SessionRecord};
 
 use crate::detect::detect_windows_capabilities;
+#[cfg(windows)]
 use crate::WINDOWS_SESSION_0;
 
 struct LiveSession {

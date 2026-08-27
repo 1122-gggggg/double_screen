@@ -1,4 +1,6 @@
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -67,14 +69,12 @@ pub fn write_token_file(path: &Path, token: &Token) -> io::Result<()> {
         std::fs::create_dir_all(dir)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }
     }
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)

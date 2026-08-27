@@ -10,7 +10,7 @@ use splitdesk_core::detect_host_os;
 pub fn probe_capabilities() -> Capabilities {
     #[cfg(target_os = "linux")]
     {
-        return splitdesk_host_linux::detect_linux_capabilities();
+        splitdesk_host_linux::detect_linux_capabilities()
     }
     #[cfg(windows)]
     {

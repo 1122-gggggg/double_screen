@@ -82,6 +82,11 @@ Capture kinds: `PipeWire`, `Dxgi`, `WindowsGraphicsCapture`, `Unavailable`.
 
 Latest-frame: capture and motion keep one slot. A new frame/sample overwrites the unread one. The encoder never waits on a growing queue.
 
+The live SDFR path keeps BGRA payloads in reference-counted byte storage. The daemon writes the
+fixed header and payload with vectored I/O, while the client splits complete payloads directly
+from its receive buffer. These transport operations do not perform additional full-frame user-space
+copies; the Windows DXGI staging readback remains the documented `cpu_copies_per_frame = 1` path.
+
 ## Metrics and clocks
 
 Thirteen stages, `T0ClientInput` through `T12Presented`.
