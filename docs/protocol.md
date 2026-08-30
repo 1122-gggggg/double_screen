@@ -2,8 +2,11 @@
 
 Two channels, not one:
 
-1. **Daemon IPC** (local control plane): JSON-lines, `127.0.0.1:9823`, token file.
-2. **Session protocol** (client ↔ session): length-prefixed JSON for control and reliable input; motion is latest-wins and may drop stale samples.
+1. **Daemon IPC** (local control plane): JSON-lines, loopback `127.0.0.1:9823`, token file.
+2. **Media/input plane:** SDFR frames plus JSON-lines input, loopback `127.0.0.1:9824`.
+
+Both ports may be forwarded through SSH for a remote client. Neither listener accepts a
+non-loopback bind because protocol v1 does not provide transport encryption.
 
 `PROTOCOL_VERSION` is `u16 = 1`.
 
@@ -15,16 +18,20 @@ Default bind: **`127.0.0.1:9823` only**. Not `0.0.0.0`.
 
 Framing: one JSON object per line, UTF-8, `\n` terminated.
 
+Maximum JSON line size is 8 KiB on both planes. Oversized, invalid UTF-8, or unterminated lines
+close the connection. The daemon caps each listener at 64 concurrent connections; media hello has
+a five-second pre-authentication deadline and idle control reads time out after 30 seconds.
+
 Authentication: `AuthToken` — 32 random bytes encoded as hex (64 hex chars), generated when the daemon starts, never hard-coded, never committed.
 
 Token binding: `{ user, session_id, exp }`. A token for user A / session `sd-001` does not authorize user B or another session.
 
-Token file, mode `0600` (owner read/write only):
+Token file locations (Unix files use mode `0600`; Windows inherits the directory ACL):
 
 | OS | Path |
 | --- | --- |
-| Linux | `$XDG_RUNTIME_DIR/splitdesk/daemon.token`, else `/tmp/splitdesk-$UID/daemon.token` |
-| Windows | `%LOCALAPPDATA%\SplitDesk\daemon.token` |
+| Linux/macOS | `$XDG_RUNTIME_DIR/splitdesk/daemon.token`, else `/tmp/splitdesk-$UID/daemon.token` |
+| Windows | `%LOCALAPPDATA%\SplitDesk\daemon.token` (inherits directory ACL) |
 
 CLI verbs (JSON-lines requests, same names):
 
@@ -67,6 +74,8 @@ the 8K BGRA limit or 16 MiB for an encoded access unit.
 Motion (`PointerMotion`) may be sent on a drop-old path: keep the latest sample only. A sender or receiver with an unread motion sample **overwrites** it. Do not build a motion queue.
 
 Buttons, keys, and control messages are reliable. They are not dropped for latency. Ordering of reliable messages is preserved.
+The client-to-socket writer is bounded; backpressure returns unsent input to the bounded channels
+instead of growing an unbounded async queue.
 
 ## Handshake
 

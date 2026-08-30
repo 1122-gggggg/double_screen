@@ -119,6 +119,8 @@ pub struct DaemonErrorBody {
 pub enum DaemonResult {
     Status {
         bind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_bind: Option<String>,
         host_os: splitdesk_core::HostOs,
         session_count: usize,
         capabilities: Capabilities,

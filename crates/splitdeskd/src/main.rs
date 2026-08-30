@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use splitdeskd::{run_daemon, DaemonConfig, DEFAULT_BIND, DEFAULT_IDLE_SECS};
+use splitdeskd::{run_daemon, DaemonConfig, DEFAULT_BIND, DEFAULT_IDLE_SECS, DEFAULT_MEDIA_BIND};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -11,6 +11,10 @@ struct Args {
     /// Listen address. Default is loopback only.
     #[arg(long, default_value = DEFAULT_BIND)]
     bind: String,
+
+    /// Media plane listen address. Loopback is required until encrypted transport is available.
+    #[arg(long, default_value = DEFAULT_MEDIA_BIND)]
+    media_bind: String,
 
     /// Token file path. Created at start with mode 0600 on Unix.
     #[arg(long)]
@@ -32,13 +36,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    if args.bind.starts_with("0.0.0.0") {
-        tracing::warn!(
-            "bind override uses a non-loopback wildcard; default remains 127.0.0.1:9823"
-        );
-    }
     let config = DaemonConfig {
         bind: args.bind,
+        media_bind: args.media_bind,
         token_path: args
             .token_file
             .unwrap_or_else(splitdeskd::default_token_path),

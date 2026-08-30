@@ -46,8 +46,32 @@ mod tests {
         let os = detect_host_os();
         #[cfg(target_os = "windows")]
         assert_eq!(os, HostOs::Windows);
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        assert_eq!(os, HostOs::MacOs);
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        assert_eq!(os, HostOs::Unknown);
+        #[cfg(target_os = "linux")]
         assert_eq!(os, HostOs::Linux);
+    }
+
+    #[test]
+    fn new_host_os_and_support_variants_are_serde_compatible() {
+        for os in [HostOs::MacOs, HostOs::Unknown] {
+            let json = serde_json::to_string(&os).unwrap();
+            assert_eq!(serde_json::from_str::<HostOs>(&json).unwrap(), os);
+            assert_eq!(
+                Capabilities::unprobed(os).session_support,
+                SessionSupport::UnsupportedHost
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<HostOs>(r#""FutureDesktopOs""#).unwrap(),
+            HostOs::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionSupport>(r#""FutureSessionMode""#).unwrap(),
+            SessionSupport::UnsupportedHost
+        );
     }
 
     #[test]

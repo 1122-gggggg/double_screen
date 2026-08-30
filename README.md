@@ -6,7 +6,7 @@ Latency over quality. Latest-frame-wins. Bounded queues (depth 1 for motion and 
 
 ## Status
 
-Version `0.1.0`. Linux multi-user runtime is implemented; GPU acceptance still
+Version `0.2.0`. Linux multi-user runtime is implemented; GPU acceptance still
 has to be exercised on the target NVIDIA host because public CI is CPU-only.
 
 | Path | Honest state |
@@ -14,6 +14,8 @@ has to be exercised on the target NVIDIA host because public CI is CPU-only.
 | Windows 10/11 host, one interactive session | **Usable loopback:** DXGI Desktop Duplication → CPU BGRA readback (`cpu_copies=1`) → SDFR on `127.0.0.1:9824` → native minifb client |
 | Windows second interactive session | `MultiUserNotSupportedByHostOs` (no RDS bypass) |
 | Linux multi-user Weston / PipeWire / NVENC | **Implemented, hardware-gated:** one Weston + virtual seat per user, PipeWire → GLMemory → NVENC |
+| Linux / Windows / macOS native client | **Builds natively:** one shared `splitdesk-client`; remote hosts are reached through a two-port SSH tunnel |
+| macOS host | **Not implemented:** status and diagnostics report `UnsupportedHost`; session creation returns `BackendUnavailable` |
 | H.264 NVENC live encode | Live Annex-B IDR access units over SDFR; native clients decode with OpenH264 |
 | End-to-end latency p50/p95 | **NOT MEASURED** |
 
@@ -26,7 +28,7 @@ What this is **not**:
 
 ## Workspace
 
-Rust edition 2021, MSRV 1.80, MIT license.
+Rust edition 2021, MSRV 1.85, MIT license.
 
 | Crate | Role |
 | --- | --- |
@@ -39,7 +41,8 @@ Rust edition 2021, MSRV 1.80, MIT license.
 | `splitdesk-host-linux` | Weston headless sessions as the session UID |
 | `splitdesk-host-windows` | Single interactive session; no Win10/11 multi-user |
 | `splitdesk-client-core` | Shared client logic |
-| `splitdesk-client-linux` / `splitdesk-client-windows` | Native clients |
+| `splitdesk-client` | Shared Linux / Windows / macOS native client |
+| `splitdesk-client-linux` / `splitdesk-client-windows` | Compatibility launchers that delegate to `splitdesk-client` |
 | `splitdeskd` | Host daemon (control plane) |
 | `splitdesk-cli` | `splitdesk` CLI |
 | `splitdesk-bench` | Measurement harness — not a source of fake numbers |
@@ -49,7 +52,7 @@ Linux host code is compiled on Windows behind `cfg` and returns `BackendUnavaila
 ## Build
 
 ```text
-rustc 1.80+
+rustc 1.85+
 cargo build --workspace
 cargo build --workspace --release
 ```
@@ -68,6 +71,7 @@ nvcodec, NVIDIA driver, and per-user PipeWire prerequisites.
 ```text
 cargo run -p splitdeskd
 cargo run -p splitdesk-cli -- status
+cargo run -p splitdesk-client -- --help
 ```
 
 Default daemon bind is `127.0.0.1:9823` only. Never `0.0.0.0` by default.
@@ -86,6 +90,21 @@ SDFR framing uses shared frame storage, vectored socket writes, and zero-copy cl
 it does not add full-payload copies beyond the documented capture/readback path.
 A second `session create` on Windows 10/11 fails with `MultiUserNotSupportedByHostOs`.
 
+## Cross-platform client
+
+`splitdesk-client` is the canonical client on Linux, Windows, and macOS. The daemon keeps
+both TCP planes loopback-only because the built-in transport does not yet provide TLS. For a
+different machine, forward both ports through SSH instead of exposing them publicly:
+
+```text
+ssh -N -L 19823:127.0.0.1:9823 -L 19824:127.0.0.1:9824 user@splitdesk-host
+
+splitdesk-client --server 127.0.0.1:19823 --media-server 127.0.0.1:19824 --user <host-user> --token-file <secure-local-copy-of-daemon.token>
+```
+
+The token file must be copied over an authenticated channel and kept private. See
+[Cross-platform usage](docs/cross-platform.md) for OS support and limitations.
+
 ## CLI
 
 ```text
@@ -102,8 +121,8 @@ splitdesk diagnostics media-path
 
 Daemon IPC is JSON-lines, authenticated with a token generated at daemon start (never hard-coded):
 
-- Linux: `$XDG_RUNTIME_DIR/splitdesk/daemon.token`, else `/tmp/splitdesk-$UID/daemon.token`, mode `0600`
-- Windows: `%LOCALAPPDATA%\SplitDesk\daemon.token`, mode equivalent to owner-only
+- Linux/macOS: `$XDG_RUNTIME_DIR/splitdesk/daemon.token`, else `/tmp/splitdesk-$UID/daemon.token`, mode `0600`
+- Windows: `%LOCALAPPDATA%\SplitDesk\daemon.token`; the file inherits the per-user directory ACL
 
 ## Host rules (short)
 
@@ -132,6 +151,7 @@ Do not implement or regress to:
 - [Windows host](docs/windows-host.md)
 - [Security](docs/security.md)
 - [Benchmarking](docs/benchmarking.md)
+- [Cross-platform usage](docs/cross-platform.md)
 - [MVP acceptance](tests/mvp-acceptance.md)
 
 Research notes under `docs/research/` are investigation, not promises.

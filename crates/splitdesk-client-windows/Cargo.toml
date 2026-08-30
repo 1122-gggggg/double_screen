@@ -12,12 +12,5 @@ name = "splitdesk-client-windows"
 path = "src/main.rs"
 
 [dependencies]
-splitdesk-core.workspace = true
-splitdesk-client-core.workspace = true
-splitdeskd = { path = "../splitdeskd" }
-minifb = "0.28"
-anyhow.workspace = true
-clap.workspace = true
+splitdesk-client.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true

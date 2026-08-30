@@ -1,0 +1,28 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.85.0'
+      - name: Install cargo-audit
+        # 0.22 parses current RustSec CVSS 4.0 advisories; 0.22.1 is the
+        # newest patch in that series compatible with the project MSRV.
+        run: cargo install cargo-audit --version 0.22.1 --locked
+      - name: Audit Cargo.lock
+        # minifb 0.28 (latest) references unmaintained `instant` only for wasm32;
+        # SplitDesk release targets are Linux, Windows, and macOS native builds.
+        run: cargo audit --ignore RUSTSEC-2024-0384 --deny warnings

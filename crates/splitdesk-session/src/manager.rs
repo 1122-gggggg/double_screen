@@ -43,6 +43,7 @@ impl SessionManager {
         let support = match os {
             HostOs::Linux => SessionSupport::LinuxMultiUser,
             HostOs::Windows => SessionSupport::WindowsSingleInteractive,
+            HostOs::MacOs | HostOs::Unknown => SessionSupport::UnsupportedHost,
         };
         Self::new_full(os, support, idle, None)
     }
@@ -91,6 +92,11 @@ impl SessionManager {
         matches!(self.support, SessionSupport::WindowsSingleInteractive)
     }
 
+    fn unsupported_host(&self) -> bool {
+        matches!(self.os, HostOs::MacOs | HostOs::Unknown)
+            || matches!(self.support, SessionSupport::UnsupportedHost)
+    }
+
     fn committed_active(inner: &Inner) -> usize {
         inner
             .entries
@@ -116,6 +122,9 @@ impl SessionManager {
     }
 
     pub fn create_session(&self, req: CreateSessionRequest) -> Result<SessionRecord, Error> {
+        if self.unsupported_host() {
+            return Err(Error::backend("host OS is not supported"));
+        }
         if let Some(backend) = &self.backend {
             {
                 let mut inner = self.inner.lock();
@@ -170,7 +179,7 @@ impl SessionManager {
             status: SessionStatus::Running,
             wayland_display: match self.os {
                 HostOs::Linux => Some(format!("splitdesk-{id}")),
-                HostOs::Windows => None,
+                HostOs::Windows | HostOs::MacOs | HostOs::Unknown => None,
             },
             windows_session_id: None,
             encoder: EncoderKind::Unavailable,
@@ -452,6 +461,41 @@ mod tests {
         assert!(matches!(
             mgr.create_session(req("bob")),
             Err(Error::MultiUserNotSupportedByHostOs)
+        ));
+    }
+
+    #[test]
+    fn unsupported_host_rejects_create_with_backend_unavailable() {
+        let mgr = SessionManager::for_host(HostOs::MacOs, None);
+        assert_eq!(mgr.session_support(), SessionSupport::UnsupportedHost);
+        assert!(matches!(
+            mgr.create_session(req("alice")),
+            Err(Error::BackendUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn public_new_full_cannot_enable_unsupported_host() {
+        let mgr =
+            SessionManager::new_full(HostOs::MacOs, SessionSupport::LinuxMultiUser, None, None);
+        assert!(matches!(
+            mgr.create_session(req("alice")),
+            Err(Error::BackendUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn public_with_backend_cannot_enable_unknown_host() {
+        let backend = TestBackend::shared_display("wayland-0");
+        let mgr = SessionManager::with_backend(
+            HostOs::Unknown,
+            SessionSupport::WindowsSingleInteractive,
+            None,
+            backend,
+        );
+        assert!(matches!(
+            mgr.create_session(req("alice")),
+            Err(Error::BackendUnavailable { .. })
         ));
     }
 

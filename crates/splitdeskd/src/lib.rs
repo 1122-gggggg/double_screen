@@ -15,6 +15,7 @@ pub use ipc::{
 };
 pub use rpc::{rpc, rpc_with_token, token_path_hint, RpcError};
 pub use server::{run_daemon, DaemonConfig};
+pub use splitdesk_protocol::DEFAULT_MEDIA_BIND;
 pub use token::{
     default_token_path, generate_token, load_token, write_token_file, Token, TOKEN_BYTE_LEN,
 };
@@ -111,6 +112,20 @@ mod tests {
     fn default_bind_is_localhost() {
         assert_eq!(DEFAULT_BIND, "127.0.0.1:9823");
         assert!(!DEFAULT_BIND.starts_with("0.0.0.0"));
+    }
+
+    #[test]
+    fn status_result_reports_the_media_endpoint() {
+        let result = DaemonResult::Status {
+            bind: "127.0.0.1:9823".into(),
+            media_bind: Some("[::1]:19824".into()),
+            host_os: splitdesk_core::HostOs::Linux,
+            session_count: 0,
+            capabilities: splitdesk_core::Capabilities::unprobed(splitdesk_core::HostOs::Linux),
+        };
+
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["media_bind"], "[::1]:19824");
     }
 
     #[test]

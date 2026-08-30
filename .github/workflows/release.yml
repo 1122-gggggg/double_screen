@@ -1,0 +1,130 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.85.0'
+      - name: Verify tag matches workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vX.Y.Z" >&2; exit 1; }
+          expected="${TAG#v}"
+          actual=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(p["version"] for p in d["packages"] if p["name"] == "splitdesk-core"))')
+          test "$expected" = "$actual"
+
+  archive:
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.85.0'
+      - name: Build release binaries
+        shell: bash
+        run: cargo build --release --locked --bin splitdesk --bin splitdeskd --bin splitdesk-client
+      - name: Test release source
+        shell: bash
+        run: cargo test --workspace --all-targets --locked
+      - name: Create archive and SHA-256 checksum
+        shell: pwsh
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $safeVersion = $env:VERSION -replace '[^0-9A-Za-z._-]', '-'
+          $staging = "splitdesk-$safeVersion-$env:PLATFORM"
+          $archive = "$staging.tar.gz"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          if (-not (Get-Command tar -ErrorAction SilentlyContinue)) { throw "tar is required" }
+          $binaries = @("splitdesk", "splitdesk-client", "splitdeskd")
+          foreach ($binary in $binaries) {
+            $suffix = if ($env:PLATFORM -eq "windows") { ".exe" } else { "" }
+            $source = "target/release/$binary$suffix"
+            if (-not (Test-Path $source -PathType Leaf)) { throw "Missing $source" }
+            Copy-Item $source $staging
+          }
+          tar -czf $archive -C $staging .
+          if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
+          tar -tzf $archive | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "archive verification failed" }
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -Encoding ascii "$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splitdesk-${{ matrix.platform }}
+          path: |
+            splitdesk-*.tar.gz
+            splitdesk-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: archive
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: release
+          merge-multiple: true
+      - name: Validate release assets
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(release/*.tar.gz)
+          checksums=(release/*.tar.gz.sha256)
+          test "${#archives[@]}" -eq 3
+          test "${#checksums[@]}" -eq 3
+          (cd release && sha256sum -c -- *.tar.gz.sha256)
+          for archive in "${archives[@]}"; do
+            case "$archive" in
+              *-linux.tar.gz) expected=(splitdesk splitdesk-client splitdeskd) ;;
+              *-windows.tar.gz) expected=(splitdesk.exe splitdesk-client.exe splitdeskd.exe) ;;
+              *-macos.tar.gz) expected=(splitdesk splitdesk-client splitdeskd) ;;
+              *) echo "unexpected archive: $archive" >&2; exit 1 ;;
+            esac
+            listing=$(tar -tzf "$archive")
+            for binary in "${expected[@]}"; do
+              grep -Eq "(^|/)${binary//./\\.}$" <<<"$listing"
+            done
+          done
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi

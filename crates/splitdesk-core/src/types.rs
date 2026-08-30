@@ -28,13 +28,20 @@ impl Default for Resolution {
 pub enum HostOs {
     Linux,
     Windows,
+    MacOs,
+    #[serde(other)]
+    Unknown,
 }
 
 pub fn detect_host_os() -> HostOs {
     if cfg!(target_os = "windows") {
         HostOs::Windows
-    } else {
+    } else if cfg!(target_os = "macos") {
+        HostOs::MacOs
+    } else if cfg!(target_os = "linux") {
         HostOs::Linux
+    } else {
+        HostOs::Unknown
     }
 }
 
@@ -86,6 +93,8 @@ pub enum SessionSupport {
     LinuxMultiUser,
     WindowsSingleInteractive,
     WindowsServerRds,
+    #[serde(other)]
+    UnsupportedHost,
 }
 
 pub const DEFAULT_FPS: u32 = 60;

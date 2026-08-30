@@ -7,7 +7,7 @@ Unchecked on purpose. Tick a box only after the behavior was exercised on a real
 - [ ] `SessionId` displays as sequential `sd-001`, `sd-002`, …
 - [ ] `Resolution` defaults to 1920×1080
 - [ ] `CreateSessionRequest.fps` defaults to 60
-- [ ] `detect_host_os()` returns `Linux` or `Windows` for the host
+- [ ] `detect_host_os()` returns `Linux`, `Windows`, or `MacOs` for supported build targets
 - [ ] IPC types serialize (serde) on the daemon JSON-lines path
 
 ## Session lifecycle
@@ -70,7 +70,10 @@ Unchecked on purpose. Tick a box only after the behavior was exercised on a real
 - [ ] JSON-lines request/response
 - [ ] Token generated at daemon start
 - [ ] Linux token path `$XDG_RUNTIME_DIR/splitdesk/daemon.token` or `/tmp/splitdesk-$UID/daemon.token`, mode `0600`
-- [ ] Windows token path `%LOCALAPPDATA%\SplitDesk\daemon.token`, owner-only
+- [ ] Windows token path `%LOCALAPPDATA%\SplitDesk\daemon.token`, inheriting the per-user directory ACL
+- [ ] Control and media bind overrides reject every non-loopback address
+- [ ] Control/media admission is capped; oversized/unterminated JSON lines and slow pre-auth peers are rejected
+- [ ] Unix token replacement is atomic and rejects symlink destinations; Windows uses replace/write-through semantics
 - [ ] `splitdesk status`
 - [ ] `splitdesk session list`
 - [ ] `splitdesk session create --user`
@@ -88,6 +91,7 @@ Unchecked on purpose. Tick a box only after the behavior was exercised on a real
 - [ ] `SoftwareFallback` measures copy latency
 - [ ] Capture/motion queue depth 1 (latest frame wins)
 - [ ] No unbounded media queues
+- [ ] Client async input writer is bounded and retains unsent input under backpressure
 - [ ] `MemoryPath` includes `cpu_copies_per_frame` (not claimed zero-copy)
 - [ ] Encoder/capture/input/clipboard/audio traits exist; GPU tests `#[ignore = "requires-gpu"]`
 - [ ] Linux live path is `pipewiresrc → GLMemory → nvh264enc`, not a capability-only stub
@@ -107,7 +111,7 @@ Unchecked on purpose. Tick a box only after the behavior was exercised on a real
 - [ ] systemd unit `ExecStart`s `splitdeskd`, not Weston
 - [ ] `install.sh` refuses a unit that starts a compositor
 - [ ] `install.sh` never `chmod 777`
-- [ ] CI: `ubuntu-latest` and `windows-latest`
+- [ ] CI: `ubuntu-latest`, `windows-latest`, and `macos-latest`
 - [ ] CI: `cargo fmt --check`, clippy, test, build
 - [ ] CI does not run `--ignored` GPU tests and does not stub a GPU
 
