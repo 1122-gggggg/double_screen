@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "linux", windows))]
 use std::path::Path;
 
 use clap::{Parser, ValueEnum};

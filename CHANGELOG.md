@@ -16,6 +16,8 @@ All notable changes to SplitDesk are documented here. Versions follow Semantic V
 - Linux and Windows legacy client binaries now delegate to the shared client implementation.
 - Client input transport is bounded and retries the latest unsent input under backpressure.
 - Repository metadata and Linux service documentation point to the canonical repository.
+- The Weston input module adapts to the versioned 13–16 input event ABI and treats external
+  libweston headers as system headers while retaining warnings-as-errors for SplitDesk code.
 
 ### Security
 

@@ -39,16 +39,23 @@ void weston_seat_init(struct weston_seat *, struct weston_compositor *, const ch
 void weston_seat_release(struct weston_seat *);
 void weston_seat_init_pointer(struct weston_seat *);
 int weston_seat_init_keyboard(struct weston_seat *, struct xkb_keymap *);
+#if SPLITDESK_WESTON_MAJOR >= 16
+void notify_motion(const struct weston_pointer_motion_event *);
+void notify_button(const struct weston_pointer_button_event *);
+void notify_axis(const struct weston_pointer_axis_event *);
+void notify_key(const struct weston_key_event *);
+#else
 void notify_motion(struct weston_seat *, const struct timespec *,
 		   struct weston_pointer_motion_event *);
 void notify_button(struct weston_seat *, const struct timespec *, int32_t,
 		   enum wl_pointer_button_state);
 void notify_axis(struct weston_seat *, const struct timespec *,
 		 struct weston_pointer_axis_event *);
-void notify_axis_source(struct weston_seat *, uint32_t);
-void notify_pointer_frame(struct weston_seat *);
 void notify_key(struct weston_seat *, const struct timespec *, uint32_t,
 		enum wl_keyboard_key_state, enum weston_key_state_update);
+#endif
+void notify_axis_source(struct weston_seat *, uint32_t);
+void notify_pointer_frame(struct weston_seat *);
 
 struct splitdesk_input {
 	struct weston_compositor *compositor;
@@ -188,6 +195,87 @@ button_to_evdev(uint32_t button)
 }
 
 static void
+splitdesk_notify_motion(struct splitdesk_input *input,
+			const struct timespec *now, double x, double y)
+{
+#if SPLITDESK_WESTON_MAJOR >= 16
+	struct timespec event_time = *now;
+	struct weston_pointer_motion_event event;
+	struct weston_coord_global abs = { .c = weston_coord(x, y) };
+	weston_pointer_motion_event_init(&event, &event_time, &input->seat,
+					 WESTON_POINTER_MOTION_ABS,
+					 &abs, NULL, NULL);
+	notify_motion(&event);
+#else
+	struct weston_pointer_motion_event event = {
+		.mask = WESTON_POINTER_MOTION_ABS,
+		.time = *now,
+		.abs = {
+			.c = {
+				.x = x,
+				.y = y,
+			},
+		},
+	};
+	notify_motion(&input->seat, now, &event);
+#endif
+}
+
+static void
+splitdesk_notify_button(struct splitdesk_input *input,
+			const struct timespec *now, uint32_t button,
+			enum wl_pointer_button_state state)
+{
+#if SPLITDESK_WESTON_MAJOR >= 16
+	struct timespec event_time = *now;
+	struct weston_pointer_button_event event;
+	weston_pointer_button_event_init(&event, &event_time, &input->seat,
+					 button, state);
+	notify_button(&event);
+#else
+	notify_button(&input->seat, now, (int32_t)button, state);
+#endif
+}
+
+static void
+splitdesk_notify_axis(struct splitdesk_input *input,
+		      const struct timespec *now, uint32_t axis,
+		      double value, int32_t discrete)
+{
+#if SPLITDESK_WESTON_MAJOR >= 16
+	struct timespec event_time = *now;
+	struct weston_pointer_axis_event event;
+	weston_pointer_axis_event_init(&event, &event_time, &input->seat,
+				       axis, value, true, discrete);
+	notify_axis(&event);
+#else
+	struct weston_pointer_axis_event event = {
+		.axis = axis,
+		.value = value,
+		.has_discrete = true,
+		.discrete = discrete,
+	};
+	notify_axis(&input->seat, now, &event);
+#endif
+}
+
+static void
+splitdesk_notify_key(struct splitdesk_input *input,
+		     const struct timespec *now, uint32_t key,
+		     enum wl_keyboard_key_state state)
+{
+#if SPLITDESK_WESTON_MAJOR >= 16
+	struct timespec event_time = *now;
+	struct weston_key_event event;
+	weston_key_event_init(&event, &event_time, &input->seat, key, state,
+			      STATE_UPDATE_AUTOMATIC);
+	notify_key(&event);
+#else
+	notify_key(&input->seat, now, key, state, STATE_UPDATE_AUTOMATIC);
+#endif
+}
+
+static void
 release_all(struct splitdesk_input *input)
 {
 	struct timespec now;
@@ -196,9 +284,8 @@ release_all(struct splitdesk_input *input)
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	for (i = 0; i < SPLITDESK_KEY_CAPACITY; i++) {
 		if (input->keys_down[i]) {
-			notify_key(&input->seat, &now, (uint32_t)i,
-				   WL_KEYBOARD_KEY_STATE_RELEASED,
-				   STATE_UPDATE_AUTOMATIC);
+			splitdesk_notify_key(input, &now, (uint32_t)i,
+					     WL_KEYBOARD_KEY_STATE_RELEASED);
 			input->keys_down[i] = false;
 		}
 	}
@@ -206,8 +293,8 @@ release_all(struct splitdesk_input *input)
 		if (input->buttons_down[i]) {
 			uint32_t code = button_to_evdev((uint32_t)i);
 			if (code)
-				notify_button(&input->seat, &now, (int32_t)code,
-					      WL_POINTER_BUTTON_STATE_RELEASED);
+				splitdesk_notify_button(input, &now, code,
+						WL_POINTER_BUTTON_STATE_RELEASED);
 			input->buttons_down[i] = false;
 		}
 	}
@@ -245,15 +332,9 @@ dispatch_packet(struct splitdesk_input *input, const uint8_t *packet)
 	case SPLITDESK_POINTER_MOTION: {
 		double x = read_f64(packet + 16);
 		double y = read_f64(packet + 24);
-		struct weston_pointer_motion_event event = {
-			.mask = WESTON_POINTER_MOTION_ABS,
-			.time = now,
-			.x = x,
-			.y = y,
-		};
 		if (!isfinite(x) || !isfinite(y))
 			return false;
-		notify_motion(&input->seat, &now, &event);
+		splitdesk_notify_motion(input, &now, x, y);
 		notify_pointer_frame(&input->seat);
 		return true;
 	}
@@ -263,9 +344,9 @@ dispatch_packet(struct splitdesk_input *input, const uint8_t *packet)
 		bool pressed = read_u32(packet + 36) != 0;
 		if (!code || button >= 8)
 			return false;
-		notify_button(&input->seat, &now, (int32_t)code,
-			      pressed ? WL_POINTER_BUTTON_STATE_PRESSED :
-					WL_POINTER_BUTTON_STATE_RELEASED);
+		splitdesk_notify_button(input, &now, code,
+				pressed ? WL_POINTER_BUTTON_STATE_PRESSED :
+					  WL_POINTER_BUTTON_STATE_RELEASED);
 		input->buttons_down[button] = pressed;
 		notify_pointer_frame(&input->seat);
 		return true;
@@ -275,10 +356,9 @@ dispatch_packet(struct splitdesk_input *input, const uint8_t *packet)
 		bool pressed = read_u32(packet + 36) != 0;
 		if (!code || code >= SPLITDESK_KEY_CAPACITY)
 			return false;
-		notify_key(&input->seat, &now, code,
-			   pressed ? WL_KEYBOARD_KEY_STATE_PRESSED :
-				     WL_KEYBOARD_KEY_STATE_RELEASED,
-			   STATE_UPDATE_AUTOMATIC);
+		splitdesk_notify_key(input, &now, code,
+			     pressed ? WL_KEYBOARD_KEY_STATE_PRESSED :
+				       WL_KEYBOARD_KEY_STATE_RELEASED);
 		input->keys_down[code] = pressed;
 		return true;
 	}
@@ -288,24 +368,14 @@ dispatch_packet(struct splitdesk_input *input, const uint8_t *packet)
 		if (!isfinite(dx) || !isfinite(dy))
 			return false;
 		notify_axis_source(&input->seat, WL_POINTER_AXIS_SOURCE_WHEEL);
-		if (dy != 0.0) {
-			struct weston_pointer_axis_event axis = {
-				.axis = WL_POINTER_AXIS_VERTICAL_SCROLL,
-				.value = -dy * 10.0,
-				.has_discrete = true,
-				.discrete = dy > 0.0 ? -1 : 1,
-			};
-			notify_axis(&input->seat, &now, &axis);
-		}
-		if (dx != 0.0) {
-			struct weston_pointer_axis_event axis = {
-				.axis = WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-				.value = -dx * 10.0,
-				.has_discrete = true,
-				.discrete = dx > 0.0 ? -1 : 1,
-			};
-			notify_axis(&input->seat, &now, &axis);
-		}
+		if (dy != 0.0)
+			splitdesk_notify_axis(input, &now,
+					      WL_POINTER_AXIS_VERTICAL_SCROLL,
+					      -dy * 10.0, dy > 0.0 ? -1 : 1);
+		if (dx != 0.0)
+			splitdesk_notify_axis(input, &now,
+					      WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+					      -dx * 10.0, dx > 0.0 ? -1 : 1);
 		notify_pointer_frame(&input->seat);
 		return true;
 	}
