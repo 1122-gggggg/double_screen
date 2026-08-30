@@ -1,0 +1,25 @@
+[package]
+name = "splitdesk-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Cross-platform SplitDesk native client"
+
+[lib]
+name = "splitdesk_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "splitdesk-client"
+path = "src/main.rs"
+
+[dependencies]
+splitdesk-client-core.workspace = true
+splitdesk-core.workspace = true
+splitdeskd = { path = "../splitdeskd" }
+clap.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true

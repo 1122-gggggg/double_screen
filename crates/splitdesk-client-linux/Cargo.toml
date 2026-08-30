@@ -12,12 +12,5 @@ name = "splitdesk-client-linux"
 path = "src/main.rs"
 
 [dependencies]
-splitdesk-core.workspace = true
-splitdesk-client-core.workspace = true
-splitdeskd = { path = "../splitdeskd" }
-anyhow.workspace = true
-clap.workspace = true
-serde_json.workspace = true
+splitdesk-client.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true

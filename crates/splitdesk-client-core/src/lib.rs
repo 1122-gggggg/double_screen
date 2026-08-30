@@ -8,7 +8,7 @@ use std::{
 
 use bytes::BytesMut;
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Scale, Window, WindowOptions};
-use openh264::{decoder::Decoder as H264Decoder, formats::YUVSource, OpenH264API};
+use openh264::{decoder::Decoder as H264Decoder, formats::YUVSource};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use splitdesk_core::{Codec, Error, SessionId, UserName};
@@ -30,6 +30,7 @@ pub const MOD_CTRL: u32 = 1 << 0;
 pub const MOD_SHIFT: u32 = 1 << 1;
 pub const KEY_F12_WIN: u32 = 123;
 pub const KEY_F12_EVDEV: u32 = 88;
+const MEDIA_WRITER_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ClientStats {
@@ -107,12 +108,13 @@ pub struct ClientCore {
     server: String,
     token: String,
     user: String,
+    media_server: Option<SocketAddr>,
     session_id: Option<SessionId>,
     overlay: bool,
     cursor: LocalCursor,
     frames: Arc<BoundedSlot<MediaFrame>>,
     input: Mutex<InputChannels>,
-    media_writer: Option<mpsc::UnboundedSender<MediaWriterCommand>>,
+    media_writer: Option<mpsc::Sender<MediaWriterCommand>>,
     media_reader_task: Option<JoinHandle<()>>,
     media_writer_task: Option<JoinHandle<()>>,
     connected: bool,
@@ -128,6 +130,7 @@ impl ClientCore {
             server: server.into(),
             token: token.into(),
             user: user.into(),
+            media_server: None,
             session_id: None,
             overlay: false,
             cursor: LocalCursor::default(),
@@ -158,6 +161,14 @@ impl ClientCore {
 
     pub fn connected(&self) -> bool {
         self.connected
+    }
+
+    /// Override the daemon-advertised media endpoint, primarily for an SSH port forward.
+    /// Both configured and advertised endpoints remain loopback-only until an encrypted
+    /// network transport is implemented.
+    pub fn set_media_server(&mut self, endpoint: Option<&str>) -> Result<(), Error> {
+        self.media_server = endpoint.map(parse_loopback_media_endpoint).transpose()?;
+        Ok(())
     }
 
     pub fn push_frame(&self, frame: MediaFrame) {
@@ -200,6 +211,8 @@ impl ClientCore {
         self.input.lock().push(input)
     }
 
+    /// Move queued input into the connected writer and return only events accepted by it.
+    /// Without a connected writer, returns the locally drained events for embedders/tests.
     pub fn drain_outbound(&self) -> Vec<Input> {
         let mut channels = self.input.lock();
         let mut out = Vec::new();
@@ -212,18 +225,31 @@ impl ClientCore {
         while let Some(reliable) = channels.pop_reliable() {
             out.push(reliable);
         }
-        drop(channels);
-
+        let mut accepted = out.len();
         if let Some(writer) = &self.media_writer {
-            for input in &out {
-                if writer
-                    .send(MediaWriterCommand::Input(input.clone()))
-                    .is_err()
-                {
+            for (index, input) in out.iter().cloned().enumerate() {
+                if let Err(error) = writer.try_send(MediaWriterCommand::Input(input)) {
+                    accepted = index;
+                    for unsent in out[index..].iter().cloned() {
+                        if channels.push(unsent).is_err() {
+                            tracing::warn!("input retry queue reached its bounded capacity");
+                            break;
+                        }
+                    }
+                    match error {
+                        mpsc::error::TrySendError::Full(_) => {
+                            tracing::debug!("media input writer is applying backpressure");
+                        }
+                        mpsc::error::TrySendError::Closed(_) => {
+                            tracing::warn!("media input writer is closed");
+                        }
+                    }
                     break;
                 }
             }
         }
+        drop(channels);
+        out.truncate(accepted);
         out
     }
 
@@ -300,7 +326,13 @@ impl ClientCore {
         let released = self.input.lock().release_held(0);
         if let Some(writer) = &self.media_writer {
             for input in released {
-                if writer.send(MediaWriterCommand::Input(input)).is_err() {
+                let sent = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    writer.send(MediaWriterCommand::Input(input)),
+                )
+                .await;
+                if !matches!(sent, Ok(Ok(()))) {
+                    tracing::warn!("timed out while releasing held input");
                     break;
                 }
             }
@@ -329,13 +361,10 @@ impl ClientCore {
         session_id: SessionId,
         media_bind: Option<&str>,
     ) -> Result<(), Error> {
-        let address: SocketAddr = media_bind
-            .unwrap_or(DEFAULT_MEDIA_BIND)
-            .parse()
-            .map_err(|_| Error::Protocol)?;
-        if !address.ip().is_loopback() {
-            return Err(Error::Protocol);
-        }
+        let address = match self.media_server {
+            Some(address) => address,
+            None => parse_loopback_media_endpoint(media_bind.unwrap_or(DEFAULT_MEDIA_BIND))?,
+        };
 
         let mut stream = TcpStream::connect(address).await.map_err(|_| Error::Io)?;
         let hello = MediaHello {
@@ -402,7 +431,7 @@ impl ClientCore {
             }
         }));
 
-        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel();
+        let (writer_tx, mut writer_rx) = mpsc::channel(MEDIA_WRITER_CAPACITY);
         self.media_writer_task = Some(tokio::spawn(async move {
             while let Some(command) = writer_rx.recv().await {
                 match command {
@@ -441,17 +470,32 @@ impl ClientCore {
             return;
         };
         let (done_tx, done_rx) = oneshot::channel();
-        if writer.send(MediaWriterCommand::Flush(done_tx)).is_ok() {
+        let sent = tokio::time::timeout(
+            Duration::from_millis(500),
+            writer.send(MediaWriterCommand::Flush(done_tx)),
+        )
+        .await;
+        if matches!(sent, Ok(Ok(()))) {
             let _ = tokio::time::timeout(Duration::from_millis(500), done_rx).await;
         }
     }
 
     async fn stop_media(&mut self) {
         if let Some(writer) = self.media_writer.take() {
-            let _ = writer.send(MediaWriterCommand::Close);
+            let _ = tokio::time::timeout(
+                Duration::from_millis(500),
+                writer.send(MediaWriterCommand::Close),
+            )
+            .await;
         }
-        if let Some(task) = self.media_writer_task.take() {
-            let _ = task.await;
+        if let Some(mut task) = self.media_writer_task.take() {
+            if tokio::time::timeout(Duration::from_secs(1), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
         }
         if let Some(task) = self.media_reader_task.take() {
             task.abort();
@@ -468,6 +512,16 @@ impl ClientCore {
             session_id: self.session_id.map(|id| id.to_string()),
         }
     }
+}
+
+fn parse_loopback_media_endpoint(endpoint: &str) -> Result<SocketAddr, Error> {
+    let address = endpoint
+        .parse::<SocketAddr>()
+        .map_err(|_| Error::Protocol)?;
+    if !address.ip().is_loopback() {
+        return Err(Error::Protocol);
+    }
+    Ok(address)
 }
 
 fn session_from_result(result: DaemonResult) -> Result<(SessionId, Option<String>), Error> {
@@ -513,6 +567,10 @@ impl WindowedClient {
 
     pub fn set_fullscreen(&mut self, on: bool) {
         self.fullscreen = on;
+    }
+
+    pub fn set_media_server(&mut self, endpoint: Option<&str>) -> Result<(), Error> {
+        self.core.set_media_server(endpoint)
     }
 
     pub fn core(&self) -> &ClientCore {
@@ -753,8 +811,7 @@ fn decode_media_frame(
     let decoder = match decoder {
         Some(decoder) => decoder,
         slot @ None => {
-            let created =
-                H264Decoder::new(OpenH264API::from_source()).map_err(|error| error.to_string())?;
+            let created = H264Decoder::new().map_err(|error| error.to_string())?;
             slot.insert(created)
         }
     };
@@ -764,8 +821,9 @@ fn decode_media_frame(
     else {
         return Ok(None);
     };
-    let width = u32::try_from(yuv.width()).map_err(|_| "invalid decoded width".to_string())?;
-    let height = u32::try_from(yuv.height()).map_err(|_| "invalid decoded height".to_string())?;
+    let (decoded_width, decoded_height) = yuv.dimensions();
+    let width = u32::try_from(decoded_width).map_err(|_| "invalid decoded width".to_string())?;
+    let height = u32::try_from(decoded_height).map_err(|_| "invalid decoded height".to_string())?;
     let len = usize::try_from(width)
         .ok()
         .and_then(|width| {
@@ -970,5 +1028,71 @@ mod tests {
             }
             _ => panic!("expected motion"),
         }
+    }
+
+    #[test]
+    fn writer_backpressure_keeps_latest_input_for_retry() {
+        let mut core = ClientCore::new(DEFAULT_BIND, "alice", "token");
+        let (writer, _reader) = mpsc::channel(MEDIA_WRITER_CAPACITY);
+        for index in 0..MEDIA_WRITER_CAPACITY {
+            writer
+                .try_send(MediaWriterCommand::Input(Input::Key {
+                    keycode: index as u32,
+                    pressed: true,
+                    modifiers: 0,
+                    ts: index as u64,
+                }))
+                .unwrap();
+        }
+        core.media_writer = Some(writer);
+        core.send_input(Input::PointerMotion {
+            x: 42.0,
+            y: 24.0,
+            ts: 9,
+        })
+        .unwrap();
+
+        let accepted = core.drain_outbound();
+        assert!(accepted.is_empty());
+        core.media_writer = None;
+        let retried = core.drain_outbound();
+
+        assert!(matches!(
+            retried.as_slice(),
+            [Input::PointerMotion {
+                x: 42.0,
+                y: 24.0,
+                ts: 9
+            }]
+        ));
+    }
+
+    #[test]
+    fn media_override_accepts_only_loopback_endpoints() {
+        let mut core = ClientCore::new(DEFAULT_BIND, "alice", "token");
+        assert!(core.set_media_server(Some("127.0.0.1:19824")).is_ok());
+        assert!(core.set_media_server(Some("[::1]:19824")).is_ok());
+        assert!(core.set_media_server(Some("0.0.0.0:19824")).is_err());
+        assert!(core.set_media_server(Some("192.0.2.10:19824")).is_err());
+        assert!(core.set_media_server(Some("not-an-address")).is_err());
+    }
+
+    #[test]
+    fn patched_openh264_decodes_a_generated_access_unit() {
+        use openh264::encoder::Encoder;
+        use openh264::formats::YUVBuffer;
+
+        let mut encoder = Encoder::new().unwrap();
+        let yuv = YUVBuffer::new(16, 16);
+        let access_unit = encoder.encode(&yuv).unwrap().to_vec();
+        let mut decoder = None;
+
+        let decoded = decode_media_frame(MediaFrame::h264(16, 16, 7, access_unit), &mut decoder)
+            .unwrap()
+            .expect("generated access unit should decode");
+
+        assert_eq!(decoded.format, MediaFormat::Bgra);
+        assert_eq!((decoded.width, decoded.height), (16, 16));
+        assert_eq!(decoded.pixels.len(), 16 * 16 * 4);
     }
 }

@@ -15,8 +15,9 @@ use splitdesk_core::{
 use splitdesk_media::{CaptureBackend, CaptureRequest};
 use splitdesk_protocol::DEFAULT_MEDIA_BIND;
 use splitdesk_session::{SessionBackend, SessionManager};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::auth::authorize;
@@ -27,12 +28,16 @@ use crate::ipc::{
 };
 #[cfg(target_os = "linux")]
 use crate::media::SessionInputEndpoint;
-use crate::media::{serve_media, FrameHub};
+use crate::media::{read_bounded_line, serve_media, FrameHub, MAX_JSON_LINE_BYTES};
 use crate::token::{generate_token, write_token_file, Token};
 use crate::DEFAULT_IDLE_SECS;
 
+const MAX_CONTROL_CONNECTIONS: usize = 64;
+const CONTROL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct DaemonConfig {
     pub bind: String,
+    pub media_bind: String,
     pub token_path: PathBuf,
     pub idle: Duration,
 }
@@ -41,6 +46,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             bind: DEFAULT_BIND.to_string(),
+            media_bind: DEFAULT_MEDIA_BIND.to_string(),
             token_path: crate::default_token_path(),
             idle: Duration::from_secs(DEFAULT_IDLE_SECS),
         }
@@ -56,6 +62,7 @@ struct SessionWorker {
 
 struct DaemonState {
     bind: String,
+    media_bind: String,
     token: Token,
     manager: Arc<SessionManager>,
     frames: Arc<FrameHub>,
@@ -65,28 +72,24 @@ struct DaemonState {
 }
 
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
+    let control_addr = parse_loopback_bind(&config.bind).map_err(anyhow::Error::msg)?;
+    let media_addr = parse_loopback_bind(&config.media_bind).map_err(anyhow::Error::msg)?;
+    let listener = TcpListener::bind(control_addr).await?;
+    let media_listener = TcpListener::bind(media_addr).await?;
+    let control_bind = listener.local_addr()?.to_string();
+    let media_bind = media_listener.local_addr()?.to_string();
     let token = generate_token();
     write_token_file(&config.token_path, &token)?;
-    let control_addr: std::net::SocketAddr = config.bind.parse()?;
-    anyhow::ensure!(
-        control_addr.ip().is_loopback(),
-        "control bind must be a loopback address"
-    );
-    let listener = TcpListener::bind(control_addr).await?;
-    let media_listener = TcpListener::bind(DEFAULT_MEDIA_BIND).await?;
     tracing::info!(
-        bind = %config.bind,
+        bind = %control_bind,
         token_path = %config.token_path.display(),
         "splitdeskd listening"
     );
 
-    let host_backend = host_backend();
     let os = detect_host_os();
-    let support = match os {
-        HostOs::Linux => SessionSupport::LinuxMultiUser,
-        HostOs::Windows => SessionSupport::WindowsSingleInteractive,
-    };
-    let manager = Arc::new(SessionManager::with_backend(
+    let support = support_for_host(os);
+    let host_backend = host_backend();
+    let manager = Arc::new(SessionManager::new_full(
         os,
         support,
         Some(config.idle),
@@ -95,7 +98,8 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     let frames = Arc::new(FrameHub::new());
     let media_token = Arc::new(token.clone());
     let state = Arc::new(DaemonState {
-        bind: config.bind.clone(),
+        bind: control_bind,
+        media_bind: media_bind.clone(),
         token,
         manager: Arc::clone(&manager),
         frames: Arc::clone(&frames),
@@ -103,7 +107,7 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
         linux_backend: host_backend.linux,
     });
-    tracing::info!(bind = DEFAULT_MEDIA_BIND, "SplitDesk media listening");
+    tracing::info!(bind = %media_bind, "SplitDesk media listening");
     tokio::spawn(serve_media(media_listener, media_token, manager, frames));
 
     let reaper = Arc::clone(&state);
@@ -124,16 +128,25 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         }
     });
 
+    let control_permits = Arc::new(Semaphore::new(MAX_CONTROL_CONNECTIONS));
     loop {
         match listener.accept().await {
-            Ok((stream, addr)) => {
+            Ok((stream, addr)) if addr.ip().is_loopback() => {
+                let Ok(permit) = control_permits.clone().try_acquire_owned() else {
+                    tracing::warn!(peer = %addr, limit = MAX_CONTROL_CONNECTIONS, "control connection limit reached");
+                    continue;
+                };
                 tracing::info!(peer = %addr, "control connection");
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(err) = handle_connection(state, stream).await {
                         tracing::warn!(error = %err, "control connection closed");
                     }
                 });
+            }
+            Ok((_stream, addr)) => {
+                tracing::warn!(peer = %addr, "rejected non-loopback control connection");
             }
             Err(err) => {
                 tracing::error!(error = %err, "accept failed");
@@ -142,8 +155,18 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     }
 }
 
+fn parse_loopback_bind(value: &str) -> Result<std::net::SocketAddr, String> {
+    let address = value
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| format!("invalid socket address: {value}"))?;
+    if !address.ip().is_loopback() {
+        return Err(format!("bind must be a loopback address: {value}"));
+    }
+    Ok(address)
+}
+
 struct HostBackend {
-    backend: Arc<dyn SessionBackend>,
+    backend: Option<Arc<dyn SessionBackend>>,
     #[cfg(target_os = "linux")]
     linux: Arc<splitdesk_host_linux::LinuxSessionBackend>,
 }
@@ -153,24 +176,42 @@ fn host_backend() -> HostBackend {
     {
         let linux = Arc::new(splitdesk_host_linux::LinuxSessionBackend::new());
         let backend: Arc<dyn SessionBackend> = linux.clone();
-        HostBackend { backend, linux }
+        HostBackend {
+            backend: Some(backend),
+            linux,
+        }
     }
     #[cfg(target_os = "windows")]
     {
         HostBackend {
-            backend: Arc::new(splitdesk_host_windows::WindowsSessionBackend::new()),
+            backend: Some(Arc::new(
+                splitdesk_host_windows::WindowsSessionBackend::new(),
+            )),
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
-        compile_error!("SplitDesk daemon requires Linux or Windows");
+        HostBackend { backend: None }
+    }
+}
+
+fn support_for_host(os: HostOs) -> SessionSupport {
+    match os {
+        HostOs::Linux => SessionSupport::LinuxMultiUser,
+        HostOs::Windows => SessionSupport::WindowsSingleInteractive,
+        HostOs::MacOs | HostOs::Unknown => SessionSupport::UnsupportedHost,
     }
 }
 
 async fn handle_connection(state: Arc<DaemonState>, stream: TcpStream) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(reader);
+    while let Some(line) = tokio::time::timeout(
+        CONTROL_IDLE_TIMEOUT,
+        read_bounded_line(&mut reader, MAX_JSON_LINE_BYTES),
+    )
+    .await??
+    {
         if line.trim().is_empty() {
             continue;
         }
@@ -204,6 +245,7 @@ fn handle_command(state: &DaemonState, cmd: DaemonCommand) -> Result<DaemonResul
             let sessions = state.manager.list_sessions()?;
             Ok(DaemonResult::Status {
                 bind: state.bind.clone(),
+                media_bind: Some(state.media_bind.clone()),
                 host_os: detect_host_os(),
                 session_count: sessions.len(),
                 capabilities: probe_capabilities(),
@@ -226,7 +268,7 @@ fn handle_command(state: &DaemonState, cmd: DaemonCommand) -> Result<DaemonResul
             spawn_session_worker(state, record.id);
             Ok(DaemonResult::Session {
                 session: record,
-                media_bind: Some(DEFAULT_MEDIA_BIND.to_string()),
+                media_bind: Some(state.media_bind.clone()),
             })
         }
         DaemonCommand::SessionDestroy { id } => {
@@ -243,7 +285,7 @@ fn handle_command(state: &DaemonState, cmd: DaemonCommand) -> Result<DaemonResul
             let sid = parse_session_id(&id)?;
             let session = state.manager.info(&sid)?;
             let media_bind = matches!(session.status, SessionStatus::Connected)
-                .then(|| DEFAULT_MEDIA_BIND.to_string());
+                .then(|| state.media_bind.clone());
             Ok(DaemonResult::Session {
                 session,
                 media_bind,
@@ -256,7 +298,7 @@ fn handle_command(state: &DaemonState, cmd: DaemonCommand) -> Result<DaemonResul
             let session = state.manager.attach(&sid)?;
             Ok(DaemonResult::Session {
                 session,
-                media_bind: Some(DEFAULT_MEDIA_BIND.to_string()),
+                media_bind: Some(state.media_bind.clone()),
             })
         }
         DaemonCommand::Detach { id } => {
@@ -320,6 +362,7 @@ fn empty_metrics(session_id: Option<String>) -> DaemonResult {
     DaemonResult::Metrics { session_id, stages }
 }
 
+#[cfg(any(target_os = "linux", windows))]
 fn spawn_session_worker(state: &DaemonState, id: SessionId) {
     let stop = Arc::new(AtomicBool::new(false));
     let task_stop = Arc::clone(&stop);
@@ -330,7 +373,7 @@ fn spawn_session_worker(state: &DaemonState, id: SessionId) {
         Ok(runtime) => runtime,
         Err(error) => {
             tracing::error!(session_id = %id, %error, "Linux session runtime missing");
-            let _ = state.manager.mark_failed(&id);
+            mark_session_failed(&state.manager, id);
             return;
         }
     };
@@ -344,20 +387,22 @@ fn spawn_session_worker(state: &DaemonState, id: SessionId) {
     let slot = state.frames.register(id, input);
     #[cfg(target_os = "linux")]
     let task_pid = Arc::clone(&capture_pid);
-    #[cfg(target_os = "linux")]
     let manager = Arc::clone(&state.manager);
     let task = tokio::spawn(async move {
         tracing::info!(session_id = %id, "session worker start");
         #[cfg(windows)]
         let _capture_thread = {
             let capture_stop = Arc::clone(&task_stop);
+            let capture_manager = Arc::clone(&manager);
+            let failure_manager = Arc::clone(&manager);
             match std::thread::Builder::new()
                 .name(format!("splitdesk-capture-{id}"))
-                .spawn(move || run_capture_worker(id, capture_stop, slot))
+                .spawn(move || run_capture_worker(id, capture_stop, slot, capture_manager))
             {
                 Ok(thread) => Some(thread),
                 Err(err) => {
                     tracing::error!(session_id = %id, error = %err, "capture thread spawn failed");
+                    mark_session_failed(&failure_manager, id);
                     None
                 }
             }
@@ -374,7 +419,7 @@ fn spawn_session_worker(state: &DaemonState, id: SessionId) {
                 Ok(thread) => Some(thread),
                 Err(err) => {
                     tracing::error!(session_id = %id, error = %err, "capture thread spawn failed");
-                    let _ = failure_manager.mark_failed(&id);
+                    mark_session_failed(&failure_manager, id);
                     None
                 }
             }
@@ -395,6 +440,11 @@ fn spawn_session_worker(state: &DaemonState, id: SessionId) {
     );
 }
 
+#[cfg(not(any(target_os = "linux", windows)))]
+fn spawn_session_worker(_state: &DaemonState, _id: SessionId) {
+    // SessionManager rejects UnsupportedHost before a worker can be requested.
+}
+
 #[cfg(target_os = "linux")]
 fn run_linux_capture_worker(
     id: SessionId,
@@ -408,7 +458,7 @@ fn run_linux_capture_worker(
         Ok(capture) => capture,
         Err(error) => {
             tracing::error!(session_id = %id, %error, "PipeWire/NVENC capture start failed");
-            let _ = manager.mark_failed(&id);
+            mark_session_failed(&manager, id);
             return;
         }
     };
@@ -422,7 +472,7 @@ fn run_linux_capture_worker(
             Ok(None) => {}
             Err(error) => {
                 tracing::error!(session_id = %id, %error, "PipeWire/NVENC capture failed");
-                let _ = manager.mark_failed(&id);
+                mark_session_failed(&manager, id);
                 break;
             }
         }
@@ -436,6 +486,7 @@ fn run_capture_worker(
     id: SessionId,
     stop: Arc<AtomicBool>,
     slot: Arc<crate::media::SessionFrameSlot>,
+    manager: Arc<SessionManager>,
 ) {
     let mut capture = splitdesk_host_windows::DxgiDuplicationCapture::new();
     let request = CaptureRequest {
@@ -444,6 +495,7 @@ fn run_capture_worker(
     };
     if let Err(err) = capture.start(&request) {
         tracing::error!(session_id = %id, error = %err, "DXGI capture start failed");
+        mark_session_failed(&manager, id);
         return;
     }
     slot.set_live_capture(true);
@@ -453,6 +505,7 @@ fn run_capture_worker(
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(session_id = %id, error = %err, "DXGI capture failed");
+                mark_session_failed(&manager, id);
                 break;
             }
         }
@@ -460,6 +513,13 @@ fn run_capture_worker(
     slot.set_live_capture(false);
     if let Err(err) = capture.stop() {
         tracing::warn!(session_id = %id, error = %err, "DXGI capture stop failed");
+    }
+}
+
+#[cfg(any(target_os = "linux", windows, test))]
+fn mark_session_failed(manager: &SessionManager, id: SessionId) {
+    if let Err(error) = manager.mark_failed(&id) {
+        tracing::warn!(session_id = %id, %error, "could not mark failed session");
     }
 }
 
@@ -496,5 +556,66 @@ fn error_code(err: &CoreError) -> &'static str {
         CoreError::Io => "Io",
         CoreError::Auth => "Auth",
         CoreError::Unsupported => "Unsupported",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_platforms_keep_control_plane_available() {
+        assert_eq!(
+            support_for_host(HostOs::MacOs),
+            SessionSupport::UnsupportedHost
+        );
+        assert_eq!(
+            support_for_host(HostOs::Unknown),
+            SessionSupport::UnsupportedHost
+        );
+    }
+
+    #[test]
+    fn both_planes_require_loopback_binds() {
+        assert!(parse_loopback_bind("127.0.0.1:0").is_ok());
+        assert!(parse_loopback_bind("[::1]:9824").is_ok());
+        assert!(parse_loopback_bind("0.0.0.0:9824").is_err());
+        assert!(parse_loopback_bind("192.0.2.1:9824").is_err());
+    }
+
+    #[test]
+    fn daemon_config_has_an_explicit_media_bind() {
+        assert_eq!(DaemonConfig::default().media_bind, DEFAULT_MEDIA_BIND);
+    }
+
+    #[tokio::test]
+    async fn rejected_bind_does_not_rotate_the_token() {
+        let token_path = std::env::temp_dir().join(format!(
+            "splitdesk-invalid-bind-{}.token",
+            uuid::Uuid::new_v4()
+        ));
+        let config = DaemonConfig {
+            bind: "0.0.0.0:9823".to_string(),
+            token_path: token_path.clone(),
+            ..DaemonConfig::default()
+        };
+
+        assert!(run_daemon(config).await.is_err());
+        assert!(!token_path.exists());
+    }
+
+    #[test]
+    fn capture_failure_marks_the_session_failed() {
+        let manager = SessionManager::for_host(HostOs::Linux, None);
+        let session = manager
+            .create_session(CreateSessionRequest::new("capture-test"))
+            .unwrap();
+
+        mark_session_failed(&manager, session.id);
+
+        assert_eq!(
+            manager.info(&session.id).unwrap().status,
+            SessionStatus::Failed
+        );
     }
 }

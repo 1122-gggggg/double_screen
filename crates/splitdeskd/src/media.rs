@@ -10,10 +10,15 @@ use splitdesk_core::SessionId;
 use splitdesk_media::BoundedSlot;
 use splitdesk_protocol::{encode_media_frame_header, Input, MediaFrame, MediaHello, MediaHelloAck};
 use splitdesk_session::SessionManager;
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
+use tokio::sync::Semaphore;
+
+pub(crate) const MAX_JSON_LINE_BYTES: usize = 8 * 1024;
+const MAX_MEDIA_CONNECTIONS: usize = 64;
+const PRE_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::auth::authorize;
 use crate::token::Token;
@@ -32,6 +37,7 @@ pub(crate) struct SessionInputEndpoint {
     pub uid: u32,
 }
 
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 impl SessionFrameSlot {
     fn new(input: Option<SessionInputEndpoint>) -> Self {
         Self {
@@ -73,6 +79,7 @@ impl FrameHub {
         }
     }
 
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     pub(crate) fn register(
         &self,
         id: SessionId,
@@ -105,13 +112,19 @@ pub(crate) async fn serve_media(
     manager: Arc<SessionManager>,
     frames: Arc<FrameHub>,
 ) {
+    let permits = Arc::new(Semaphore::new(MAX_MEDIA_CONNECTIONS));
     loop {
         match listener.accept().await {
             Ok((stream, peer)) if peer.ip().is_loopback() => {
+                let Ok(permit) = permits.clone().try_acquire_owned() else {
+                    tracing::warn!(peer = %peer, limit = MAX_MEDIA_CONNECTIONS, "media connection limit reached");
+                    continue;
+                };
                 let token = Arc::clone(&token);
                 let manager = Arc::clone(&manager);
                 let frames = Arc::clone(&frames);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(err) = handle_media_connection(stream, token, manager, frames).await
                     {
                         tracing::warn!(peer = %peer, error = %err, "media connection closed");
@@ -134,9 +147,14 @@ async fn handle_media_connection(
 ) -> anyhow::Result<()> {
     stream.set_nodelay(true)?;
     let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
 
-    let Some(line) = lines.next_line().await? else {
+    let Some(line) = tokio::time::timeout(
+        PRE_AUTH_TIMEOUT,
+        read_bounded_line(&mut reader, MAX_JSON_LINE_BYTES),
+    )
+    .await??
+    else {
         return Ok(());
     };
     let hello: MediaHello = match serde_json::from_str(&line) {
@@ -227,10 +245,54 @@ async fn handle_media_connection(
     .await?;
 
     tokio::select! {
-        result = receive_inputs(lines, slot.input.clone()) => result?,
+        result = receive_inputs(reader, slot.input.clone()) => result?,
         result = send_frames(&mut writer, slot) => result?,
     }
     Ok(())
+}
+
+pub(crate) async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(256));
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                Err(IoError::new(ErrorKind::UnexpectedEof, "truncated line"))
+            };
+        }
+
+        if let Some(newline) = available.iter().position(|byte| *byte == b'\n') {
+            if bytes.len().saturating_add(newline) > max_bytes {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    "line exceeds maximum size",
+                ));
+            }
+            bytes.extend_from_slice(&available[..newline]);
+            reader.consume(newline + 1);
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|error| IoError::new(ErrorKind::InvalidData, error));
+        }
+
+        if bytes.len().saturating_add(available.len()) > max_bytes {
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                "line exceeds maximum size",
+            ));
+        }
+        bytes.extend_from_slice(available);
+        let consumed = available.len();
+        reader.consume(consumed);
+    }
 }
 
 async fn write_ack(writer: &mut OwnedWriteHalf, ack: MediaHelloAck) -> anyhow::Result<()> {
@@ -284,7 +346,7 @@ where
 }
 
 async fn receive_inputs(
-    mut lines: Lines<BufReader<OwnedReadHalf>>,
+    mut reader: BufReader<OwnedReadHalf>,
     input: Option<SessionInputEndpoint>,
 ) -> anyhow::Result<()> {
     #[cfg(windows)]
@@ -300,11 +362,13 @@ async fn receive_inputs(
     #[cfg(not(any(windows, target_os = "linux")))]
     let _ = input;
 
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = read_bounded_line(&mut reader, MAX_JSON_LINE_BYTES).await? {
         if line.trim().is_empty() {
             continue;
         }
         let input: Input = serde_json::from_str(&line)?;
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let _ = &input;
         #[cfg(windows)]
         if let Err(err) = backend.0.inject(&input) {
             tracing::warn!(error = %err, "Windows input injection failed");
@@ -347,5 +411,29 @@ mod tests {
         let mut actual = Vec::new();
         reader.read_to_end(&mut actual).await.unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn bounded_line_reader_handles_lf_crlf_and_eof() {
+        let input = b"first\nsecond\r\n";
+        let mut reader = BufReader::new(&input[..]);
+
+        assert_eq!(
+            read_bounded_line(&mut reader, 16).await.unwrap().as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 16).await.unwrap().as_deref(),
+            Some("second")
+        );
+        assert_eq!(read_bounded_line(&mut reader, 16).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn bounded_line_reader_rejects_oversize_invalid_and_truncated_lines() {
+        for input in [&b"12345\n"[..], &b"\xff\n"[..], &b"abc"[..]] {
+            let mut reader = BufReader::new(input);
+            assert!(read_bounded_line(&mut reader, 4).await.is_err());
+        }
     }
 }

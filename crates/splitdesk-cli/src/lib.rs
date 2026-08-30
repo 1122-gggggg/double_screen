@@ -235,6 +235,8 @@ fn os_cell(os: HostOs) -> &'static str {
     match os {
         HostOs::Linux => "Linux",
         HostOs::Windows => "Windows",
+        HostOs::MacOs => "macOS",
+        HostOs::Unknown => "Unknown",
     }
 }
 
@@ -345,5 +347,13 @@ mod tests {
         assert_eq!(resolve_token(Some(""), None), Err("token required"));
         assert_eq!(resolve_token(Some("   "), None), Err("token required"));
         assert_eq!(resolve_token(Some("abc"), None), Ok("abc".into()));
+    }
+
+    #[test]
+    fn formats_all_platform_names() {
+        assert_eq!(os_cell(HostOs::Linux), "Linux");
+        assert_eq!(os_cell(HostOs::Windows), "Windows");
+        assert_eq!(os_cell(HostOs::MacOs), "macOS");
+        assert_eq!(os_cell(HostOs::Unknown), "Unknown");
     }
 }

@@ -1,4 +1,4 @@
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 use splitdesk_core::EncoderKind;
 #[cfg(any(target_os = "linux", windows))]
 use splitdesk_core::MemoryType;

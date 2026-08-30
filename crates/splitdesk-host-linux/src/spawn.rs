@@ -652,6 +652,27 @@ pub(crate) fn terminate_handle(handle: CompositorHandle) {
     }
 }
 
+pub(crate) fn compositor_pid(handle: &CompositorHandle) -> Option<u32> {
+    match handle {
+        CompositorHandle::Child(child) => Some(child.id()),
+        CompositorHandle::Systemd { unit } => systemd_main_pid(unit),
+    }
+}
+
+fn systemd_main_pid(unit: &str) -> Option<u32> {
+    let output = Command::new("systemctl")
+        .args(["show", "-p", "MainPID", "--value", unit])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let pid: u32 = text.trim().parse().ok()?;
+    if pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,26 +694,5 @@ mod tests {
             .any(|arg| { arg == "--config=/run/user/1000/splitdesk/splitdesk-1/weston.ini" }));
         assert!(!argv.iter().any(|arg| arg.contains("drm")));
         assert!(!argv.iter().any(|arg| arg.contains("headless")));
-    }
-}
-
-pub(crate) fn compositor_pid(handle: &CompositorHandle) -> Option<u32> {
-    match handle {
-        CompositorHandle::Child(child) => Some(child.id()),
-        CompositorHandle::Systemd { unit } => systemd_main_pid(unit),
-    }
-}
-
-fn systemd_main_pid(unit: &str) -> Option<u32> {
-    let output = Command::new("systemctl")
-        .args(["show", "-p", "MainPID", "--value", unit])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let pid: u32 = text.trim().parse().ok()?;
-    if pid == 0 {
-        None
-    } else {
-        Some(pid)
     }
 }

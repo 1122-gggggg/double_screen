@@ -56,6 +56,22 @@ impl Capabilities {
                 dxgi: false,
                 rds: false,
             },
+            HostOs::MacOs | HostOs::Unknown => Self {
+                host_os,
+                multi_user: false,
+                capture: CaptureKind::Unavailable,
+                encoder: EncoderKind::Unavailable,
+                codecs: vec![Codec::H264],
+                compositor: CompositorKind::None,
+                session_support: SessionSupport::UnsupportedHost,
+                nvidia: false,
+                nvenc: false,
+                pipewire: false,
+                wayland: false,
+                xwayland: false,
+                dxgi: false,
+                rds: false,
+            },
         }
     }
 
