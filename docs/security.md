@@ -8,10 +8,12 @@ SplitDesk runs other people’s keyboards and a live picture of their desktop. T
 
 May run as root (Linux) or SYSTEM (Windows) so it can spawn a session as another UID / talk to the session manager. It is the most valuable process on the host.
 
-- Default bind `127.0.0.1:9823` only. Binding `0.0.0.0` turns local JSON-lines into a network protocol; that is an operator override, not a default.
-- Token generated at start, 32 random bytes hex, file mode `0600` / owner-only ACL. Never hard-coded.
+- Control and media binds are loopback-only (`127.0.0.1:9823` and `127.0.0.1:9824` by default). Non-loopback configuration is rejected.
+- Token generated at start, 32 random bytes hex. Unix writes use atomic replacement, reject symlink destinations, and keep mode `0600`. Windows uses `MoveFileExW` replace/write-through semantics and inherits the token directory ACL. Never hard-coded.
 - Daemon starts **itself**, not Weston/DWM. Compositor as root is a vulnerability, not a feature.
 - JSON-lines parser must not trust length or type fields from an unauthenticated peer. No token → `Auth`, no session work.
+- Each listener admits at most 64 concurrent connections. JSON lines are limited to 8 KiB before
+  parsing; media hello and idle control reads have deadlines to bound slow-client resource use.
 
 ### 2. User session
 
@@ -25,7 +27,7 @@ Weston (Linux) or the interactive Windows session runs as the session user. Apps
 
 The client is outside the host. Hello/HelloAck, input, clipboard, and encoded frames cross this boundary.
 
-- v1 assumes the session plane is not a public internet service unless the operator adds a real transport security layer. Local attach after daemon auth is the supported path.
+- v1 is not a public internet service. Local attach and a two-port SSH tunnel are the supported paths.
 - `AuthToken` is bound to `{ user, session_id, exp }`. Replay after expiry is `Auth`.
 - Client-supplied motion/keys are data, not shell.
 
@@ -49,7 +51,8 @@ Writes keys and buttons into the session.
 
 Tokens, sockets, logs, runtime dirs.
 
-- Mode `0600` files, `0700` dirs. No `chmod 777`. No world-writable `/tmp/splitdesk`.
+- Unix uses mode `0600` files and `0700` dirs. No `chmod 777`. No world-writable `/tmp/splitdesk`.
+- Windows token files inherit the per-user `%LOCALAPPDATA%` directory ACL. Explicit owner-only ACL hardening remains pending and must not be claimed as complete.
 - Logs: never clipboard contents, never token values, never frame payloads.
 - Session files stay on the host; the protocol does not export `$HOME`.
 
@@ -85,7 +88,7 @@ Windows 10/11: one interactive session. Windows Server RDS only when licensed an
 
 **Attack:** read `daemon.token`, clipboard of passwords, hard-coded test token left in the binary.
 
-**Mitigations:** generate at start; `zeroize`; never hard-code; clipboard UTF-8 not logged; owner-only ACL; no plaintext password DB.
+**Mitigations:** generate at start; `zeroize`; never hard-code; clipboard UTF-8 not logged; Unix mode `0600`; Windows per-user directory ACL inheritance; no plaintext password DB.
 
 ### Privilege escalation
 
@@ -99,3 +102,11 @@ Windows 10/11: one interactive session. Windows Server RDS only when licensed an
 - Not “safe to bind on `0.0.0.0`”.
 - Not an audited sandbox. Isolation is session-id / UID / WinSta, not a VM.
 - Not a replacement for disk encryption or host login policy.
+
+## Dependency audit policy
+
+CI runs RustSec against `Cargo.lock` and denies vulnerabilities, yanked crates, unsoundness, and
+unmaintained warnings. The single explicit exception is `RUSTSEC-2024-0384`: current `minifb`
+references `instant` only under `wasm32`, while SplitDesk publishes native Linux, Windows, and
+macOS clients. Native decoder code must remain free of ignored vulnerabilities; OpenH264 is pinned
+to patched version 0.8.1 or newer within the 0.8 compatibility line.

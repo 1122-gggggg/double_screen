@@ -1,6 +1,6 @@
 [Unit]
 Description=SplitDesk host daemon
-Documentation=https://github.com/splitdesk/splitdesk
+Documentation=https://github.com/1122-gggggg/double_screen
 After=network-online.target systemd-logind.service
 Wants=network-online.target
 

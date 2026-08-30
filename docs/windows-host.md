@@ -36,7 +36,7 @@ On Disconnect, release every virtual key and button.
 
 A Windows service (`splitdeskd`) running as SYSTEM is a different trust boundary from the interactive user session ([security.md](security.md)). Session 0 isolation applies: the service does not treat Session 0 as an interactive desktop to capture or to inject into.
 
-Token file: `%LOCALAPPDATA%\SplitDesk\daemon.token`, owner-only ACL. If the daemon runs as SYSTEM, that path is SYSTEM’s profile, and the CLI must run in a context that can read it (typically a local named pipe / same-user helper — not a world-readable token).
+Token file: `%LOCALAPPDATA%\SplitDesk\daemon.token`, inheriting the per-user directory ACL. Explicit owner-only ACL hardening is still pending. If the daemon runs as SYSTEM, that path is SYSTEM’s profile, and the CLI must run in a context that can read it (typically a local named pipe / same-user helper — never a world-readable token).
 
 Default bind remains `127.0.0.1:9823`.
 

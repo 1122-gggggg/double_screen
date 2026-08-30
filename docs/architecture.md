@@ -24,10 +24,16 @@ This document describes the contract implemented by the workspace. It does not c
                                                |
                                           session protocol (length-prefixed JSON + media)
                                                |
-                                          native client
+                                  SSH tunnel (remote) / loopback (local)
+                                               |
+                              shared Linux / Windows / macOS native client
 ```
 
-- **Control plane:** local daemon, JSON-lines, bind `127.0.0.1:9823` only by default.
+- **Control plane:** local daemon, JSON-lines, loopback bind only (default `127.0.0.1:9823`).
+- **Media listener:** loopback bind only (default `127.0.0.1:9824`). Remote clients forward both
+  listeners through SSH until the built-in encrypted transport is implemented.
+- **Admission:** each listener caps concurrent connections at 64. JSON-lines are bounded to 8 KiB;
+  media hello and idle control reads have deadlines.
 - **Session plane:** length-prefixed JSON for control and reliable input; motion may drop stale samples.
 - **Media plane:** capture → optional convert → encode → transport → decode → present. Each hop is a metrics stage. Copies are counted, not hidden.
 
@@ -42,7 +48,8 @@ This document describes the contract implemented by the workspace. It does not c
 | `splitdesk-metrics` | Stages `T0ClientInput` … `T12Presented` (13), `ClockDomain`, `LatencyStats`. |
 | `splitdesk-host-linux` / `splitdesk-host-windows` | OS backends. Cross-compile via `cfg`; live spawn off-OS returns `BackendUnavailable`. |
 | `splitdeskd` / `splitdesk-cli` | Daemon and CLI. |
-| `splitdesk-transport` / `splitdesk-client-*` / `splitdesk-bench` | Wire, clients, measurement. |
+| `splitdesk-client` | Canonical Linux / Windows / macOS native client and CLI parsing. |
+| `splitdesk-transport` / compatibility `splitdesk-client-*` / `splitdesk-bench` | Wire, legacy launchers, measurement. |
 
 ## Session lifecycle
 
@@ -82,6 +89,9 @@ Capture kinds: `PipeWire`, `Dxgi`, `WindowsGraphicsCapture`, `Unavailable`.
 
 Latest-frame: capture and motion keep one slot. A new frame/sample overwrites the unread one. The encoder never waits on a growing queue.
 
+The async client writer is bounded. If it applies backpressure, unsent input returns to the
+bounded input channels; motion and scroll remain latest-wins while keys/buttons preserve order.
+
 The live SDFR path keeps BGRA payloads in reference-counted byte storage. The daemon writes the
 fixed header and payload with vectored I/O, while the client splits complete payloads directly
 from its receive buffer. These transport operations do not perform additional full-frame user-space
@@ -111,7 +121,7 @@ Booleans are probes of the host, not wishes. Missing NVENC means `nvenc: false` 
 
 ## What the daemon does not do
 
-- Does not bind `0.0.0.0` unless the operator explicitly overrides the default (discouraged; see [security.md](security.md)).
+- Does not bind either TCP plane to a non-loopback address. Remote access uses an SSH tunnel.
 - Does not start Weston/DWM as root.
 - Does not take seat0 DRM master.
 - Does not keep a plaintext password database.
